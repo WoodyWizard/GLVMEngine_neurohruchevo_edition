@@ -356,6 +356,27 @@ vec3 ComputeSpotLight(SpotLight light, vec3 normal, vec3 fragmentPosition, vec3 
     return vec3(ambient + (1.0 - shadow) * (diffuse + specular));
 }
 
+/*
+  Shadow bias in world units: one shadow map texel plus the depth change of a sloped surface across the PCF radius
+  (3 texels). A bias defined in depth buffer units detaches shadows from their casters ("peter panning"): 0.005 of the
+  orthographic depth range is almost half a unit, and perspective depth is not linear at all.
+*/
+float ComputeShadowBiasWorld(vec3 normal, vec3 lightDir, float texelWorld) {
+	float cosTheta = clamp(dot(normal, lightDir), 0.05, 1.0);
+	float tanTheta = min(sqrt(1.0 - cosTheta * cosTheta) / cosTheta, 10.0);
+	return texelWorld * (1.0 + 3.0 * tanTheta) + 0.02;
+}
+
+/// Light projections of Engine::updateDirectionalLightSpaceMatrixShadowMapUBO / updateSpotLightSpaceMatrixShadowMapUBO
+const float directionalShadowWidth = 40.0;
+const float shadowNearPlane        = 5.5;
+const float shadowFarPlane         = 100.0;
+
+/// Distance to the light from a [0, 1] depth of the spot light perspective projection
+float LinearizeSpotShadowDepth(float depth) {
+	return shadowNearPlane * shadowFarPlane / (shadowFarPlane - depth * (shadowFarPlane - shadowNearPlane));
+}
+
 float ComputeDirectionalShadow(DirectionalLight light, vec4 fragmentPositionDirectionalLightSpace, sampler2D flatShadowMap) {
 	// Perform perspective devide
 	vec3 projectiveCoordinates = fragmentPositionDirectionalLightSpace.xyz / fragmentPositionDirectionalLightSpace.w;
@@ -369,12 +390,13 @@ float ComputeDirectionalShadow(DirectionalLight light, vec4 fragmentPositionDire
 	vec3 normal = normalize(fs_in.normal);
 	/// World space direction to the light (the normal is in world space too).
 	vec3 lightDir = normalize(-light.direction);
-	float bias                 = max(0.01 * (1.0 - dot(normal, lightDir)), 0.005);
+	vec2 texelSize = 1.0 / textureSize(flatShadowMap, 0);
+	/// Orthographic projection: depth is linear over (far - near)
+	float bias = ComputeShadowBiasWorld(normal, lightDir, directionalShadowWidth * texelSize.x) / (shadowFarPlane - shadowNearPlane);
 //	float shadow               = currentDepth - bias > closestDepth ? 1.0 : 0.0;
 
 	// PCF over a 7x7 kernel
 	float shadow = 0.0;
-	vec2 texelSize = 1.0 / textureSize(flatShadowMap, 0);
 	for (int x = -3; x <= 3; ++x)
 	{
 		for (int y = -3; y <= 3; ++y)
@@ -434,18 +456,20 @@ float ComputeSpotShadow(SpotLight light, vec4 fragmentPositionSpotLightSpace, sa
 	vec3 normal = normalize(fs_in.normal);
 	/// World space direction to the light (the normal is in world space too).
 	vec3 lightDir = normalize(light.position - fs_in.fragmentPosition);
-	float bias                 = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
+	vec2 texelSize = 1.0 / textureSize(flatShadowMap, 0);
+	/// Perspective depth is not linear: compare distances to the light. A 90 degree frustum is 2 * distance wide.
+	float currentDistance = LinearizeSpotShadowDepth(currentDepth);
+	float bias = ComputeShadowBiasWorld(normal, lightDir, 2.0 * currentDistance * texelSize.x);
 //	float shadow               = currentDepth - bias > closestDepth ? 1.0 : 0.0;
 
 	// PCF over a 7x7 kernel
 	float shadow = 0.0;
-	vec2 texelSize = 1.0 / textureSize(flatShadowMap, 0);
 	for (int x = -3; x <= 3; ++x)
 	{
 		for (int y = -3; y <= 3; ++y)
 		{
 			float pcfDepth = texture(flatShadowMap, projectiveCoordinatesZO.xy + vec2(x, y) * texelSize).r;
-			shadow += currentDepth - bias > pcfDepth ? 1.0 : 0.0;
+			shadow += currentDistance - bias > LinearizeSpotShadowDepth(pcfDepth) ? 1.0 : 0.0;
 		}
 	}
 	shadow /= 49.0;

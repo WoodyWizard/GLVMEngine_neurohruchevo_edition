@@ -28,6 +28,7 @@
 #include "Components/VertexComponent.hpp"
 #include "VertexMath.hpp"
 #include <Systems/ProjectileSystem.hpp>
+#include <algorithm>
 #include <cstdint>
 #include <sys/types.h>
 #include "ArchetypeECS/ArchECS_World.hpp"
@@ -77,7 +78,8 @@ namespace GLVM::ecs
 
 					arch::componentMask moveRequiredMask = (1ul << arch::ComponentsIndices::MOVE_COMPONENT);
 					/// Check if outer current archetype has move component
-					if ( arch::matchesRequiredMask( arch->mask, moveRequiredMask) ) {
+					const bool backtrackingHasMove = arch::matchesRequiredMask( arch->mask, moveRequiredMask );
+					if ( backtrackingHasMove ) {
 						view.backtrackingMove = (ecs::components::move*)arch->components[arch::ComponentsIndices::MOVE_COMPONENT];
 						backtrackingTransform += Normalize(view.backtrackingMove[i].frameMovement) * cameraSpeed;
 						backtrackingTransform += view.backtrackingMove[i].gravity;
@@ -168,8 +170,13 @@ namespace GLVM::ecs
 															backtrackingMeshAxisMaxAbsoluteValues,
 															comparedMeshAxisMaxAbsoluteValues);
 
+						/*
+						  "Standing on top" is checked with the position before this frame's movement: a large fall step
+						  (low FPS, frame stall) must not push the entity below the ground surface tolerance and turn the
+						  ground into a wall.
+						*/
 						if ( boxColliderFlag ) {
-							upperActorCheckFlag = UpperActorCheck(backtrackingTransform,
+							upperActorCheckFlag = UpperActorCheck(backtrackingTransformComponent->position,
 																  comparedTransform,
 																  backtrackingScale,
 																  comparedScale,
@@ -182,6 +189,16 @@ namespace GLVM::ecs
 							uint8_t groudCollisionTurnOnMask = (0u << 0) | (1u << 1) | (0u << 2) | (0u << 3);
 							view.backtrackingColliderFlags[i].flags = view.backtrackingColliderFlags[i].flags | groudCollisionTurnOnMask;
 							view.backtrackingColliders[i].colliders.Push(comparedEntityID);
+
+							/// Limit the fall of this frame so the entity lands exactly on the ground surface
+							if ( backtrackingHasMove ) {
+								const float groundTop = comparedTransform[1] + comparedMeshAxisMaxAbsoluteValues.origin_offset_y +
+									comparedMeshAxisMaxAbsoluteValues.absolute_y * comparedScale;
+								const float entityBottom = backtrackingTransformComponent->position[1] + backtrackingMeshAxisMaxAbsoluteValues.origin_offset_y -
+									backtrackingMeshAxisMaxAbsoluteValues.absolute_y * backtrackingScale;
+								float& fallStep = view.backtrackingMove[i].gravity[1];
+								fallStep = std::max( fallStep, groundTop - entityBottom );
+							}
 
 							continue;
 						}

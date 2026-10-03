@@ -61,8 +61,8 @@ namespace GLVM::ecs
 //				cm::collider& collider = collidersView[i];
 					cm::colliderFlags& colliderFlags = componentsView.colliderFlagsView[i];
 					uint8_t isGroudCollisionMask = (0u << 0) | (1u << 1) | (0u << 2) | (0u << 3);
+					/// On the ground move.gravity is already limited by the collision system to land on the surface
 					if( colliderFlags.flags & isGroudCollisionMask ) {
-						move.gravity = 0;
 						transformComponent.gravityAccumulator = 0.0f;
 					}
 					uint8_t isWallCollisionMask = (1u << 0) | (0u << 1) | (0u << 2) | (0u << 3);
