@@ -14,28 +14,26 @@ namespace GLVM::ecs {
 		
 		arch::SpatialGrid& spatialGrid = arch::world.spatialGrid;
 		assert( spatialGrid.width > 0 && spatialGrid.height > 0 && spatialGrid.depth > 0 );
-		const float chunkSize = spatialGrid.grid[0][0][0].size;
-
-		const float halfWidth  = spatialGrid.width * chunkSize * 0.5f;
-		const float halfHeight = spatialGrid.height * chunkSize * 0.5f;
-		const float halfDepth  = spatialGrid.depth * chunkSize * 0.5f;
 
 		cachedArchetypesNumber = 0;
 		arch::world.searchCacheArchetypes( requiredMask, cachedArchetypes, cachedArchetypesNumber );
 
-		for( u32 i2 = 0; i2 < spatialGrid.depth; ++i2 ) {
-			for( u32 i3 = 0; i3 < spatialGrid.height; ++i3 ) {
-				for( u32 i4 = 0; i4 < spatialGrid.width; ++i4 ) {
-					for( u32 i5 = 0; i5 < spatialGrid.grid[i2][i3][i4].entities.GetSize(); ++i5 ) {
-						const u32 entity = spatialGrid.grid[i2][i3][i4].entities[i5];
-						ecs::arch::EntityLocation& entityLocation = ecs::arch::world.entityLocations[ecs::arch::getId( entity )];
-						entityLocation.gridCellCounter = 0;
-					}
-					spatialGrid.grid[i2][i3][i4].entities.clear();
-				}
+		/// Only this system fills the grid, so clearing of previously filled cells is equal to clearing of the whole grid
+		for( u32 n = 0; n < occupiedCells.GetSize(); ++n ) {
+			const u32 flatIndex = occupiedCells[n];
+			const u32 i4 = flatIndex % spatialGrid.width;
+			const u32 i3 = (flatIndex / spatialGrid.width) % spatialGrid.height;
+			const u32 i2 = flatIndex / (spatialGrid.width * spatialGrid.height);
+			core::vector<u32>& cellEntities = spatialGrid.grid[i2][i3][i4].entities;
+			for( u32 i5 = 0; i5 < cellEntities.GetSize(); ++i5 ) {
+				const u32 entityId = cellEntities[i5];
+				if ( entityId < ecs::arch::world.entityLocations.GetSize() )
+					ecs::arch::world.entityLocations[entityId].gridCellCounter = 0;
 			}
+			cellEntities.clear();
 		}
-		
+		occupiedCells.clear();
+
 		for( uint32_t i0 = 0; i0 < cachedArchetypesNumber; ++i0 ) {
 			arch::Archetype* arch = cachedArchetypes[i0];
 			view.transforms = (ecs::components::transform*)arch->components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
@@ -52,36 +50,44 @@ namespace GLVM::ecs {
 				const components::mesh& mesh           = view.meshes[i1];
 
 				components::MeshHandle entityMeshHandle = mesh.handle;
-				core::MeshAxisMaxAbsoluteValues entityChunkBounds = allMeshMaxAbsoluteValues[entityMeshHandle.id];
-				core::vector<vec3> entityBoxCornerBoundPoints = computeBoxCornerBoundPoints( entityChunkBounds, transform.position, transform.scale );
+				if ( entityMeshHandle.id >= allMeshMaxAbsoluteValues.GetSize() )
+					continue;
+
+				const core::MeshAxisMaxAbsoluteValues& entityChunkBounds = allMeshMaxAbsoluteValues[entityMeshHandle.id];
 
 				/*
 				  Need only left bottom back cornder point and right upper front
 				  conrner point to obtain all box bounds
 				*/
-				const vec3 minEntityPosition = entityBoxCornerBoundPoints[0];
-				const vec3 maxEntityPosition = entityBoxCornerBoundPoints[1];
-					
-				const u32 indexMinX = (minEntityPosition[0] + halfWidth) / chunkSize;
-				const u32 indexMinY = (minEntityPosition[1] + halfHeight) / chunkSize;
-				const u32 indexMinZ = (minEntityPosition[2] + halfDepth) / chunkSize;
+				vec3 minEntityPosition;
+				vec3 maxEntityPosition;
+				computeBoxCornerBounds( entityChunkBounds, transform.position, transform.scale, minEntityPosition, maxEntityPosition );
 
-				const u32 indexMaxX = (maxEntityPosition[0] + halfWidth) / chunkSize;
-				const u32 indexMaxY = (maxEntityPosition[1] + halfHeight) / chunkSize;
-				const u32 indexMaxZ = (maxEntityPosition[2] + halfDepth) / chunkSize;
-				
-				assert( indexMinX <= indexMaxX && indexMinY <= indexMaxY && indexMinZ <= indexMaxZ );
-				assert( indexMinX < spatialGrid.width && indexMinY < spatialGrid.height && indexMinZ < spatialGrid.depth );
-				assert( indexMaxX < spatialGrid.width && indexMaxY < spatialGrid.height && indexMaxZ < spatialGrid.depth );
-				
-				for( u32 i2 = indexMinZ; i2 <= indexMaxZ; ++i2 ) {
-					for( u32 i3 = indexMinY; i3 <= indexMaxY; ++i3 ) {
-						for( u32 i4 = indexMinX; i4 <= indexMaxX; ++i4 ) {
+				/// Entities outside of the grid are not inserted. Parts of the box outside of the grid are clamped.
+				arch::GridCellRange cellRange;
+				if ( !spatialGrid.computeCellRange( minEntityPosition, maxEntityPosition, cellRange ) ) {
+					if ( !isOutOfGridReported ) {
+						std::cout << "SpatialGridSystem: entity " << ecs::arch::getId(entity) << " is outside of the spatial grid" << std::endl;
+						isOutOfGridReported = true;
+					}
+					continue;
+				}
+
+				for( u32 i2 = cellRange.minZ; i2 <= cellRange.maxZ; ++i2 ) {
+					for( u32 i3 = cellRange.minY; i3 <= cellRange.maxY; ++i3 ) {
+						for( u32 i4 = cellRange.minX; i4 <= cellRange.maxX; ++i4 ) {
 							core::vector<u32>& chunkEntities = spatialGrid.grid[i2][i3][i4].entities;
 							if( !core::isExist<u32>( chunkEntities, ecs::arch::getId(entity) ) ) {
-								chunkEntities.Push( ecs::arch::getId(entity) );
 								const u32 currentGridCell = entityLocation.gridCellCounter;
-								assert( currentGridCell < 32 );                  ///< 8 is a maximum number for 1 entity to exist in grid cell
+								if ( currentGridCell >= ecs::arch::EntityLocation::maxGridCellNumber ) {
+									std::cout << "SpatialGridSystem: entity " << ecs::arch::getId(entity) << " occupies too many grid cells" << std::endl;
+									continue;
+								}
+
+								if ( chunkEntities.GetSize() == 0 )
+									occupiedCells.Push( (i2 * spatialGrid.height + i3) * spatialGrid.width + i4 );
+
+								chunkEntities.Push( ecs::arch::getId(entity) );
 								entityLocation.gridCellIndicies[currentGridCell]  = vec3( i2, i3, i4 );
 								entityLocation.cellEntityIndices[currentGridCell] = chunkEntities.GetSize() - 1;
 								entityLocation.isDirty = false;

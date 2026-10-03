@@ -1,51 +1,92 @@
-C = clang
-CC = clang++
-OPT = -march=x86-64-v3 -O2
-SANITIZE = -fsanitize=null -fno-omit-frame-pointer -fsanitize=address -fsanitize=undefined
-#SANITIZE =
-LDFLAGS = -lX11 -lasound -lvulkan -ldl -lpthread -lXxf86vm -lXrandr -lXi -lxcb -lxcb-keysyms -lxcb-xfixes -lxcb-cursor -lX11-xcb -lwayland-client
-CXXFLAGS = -c -std=c++20 -static -Wall -Wextra -Wpedantic -Werror -g
-CFLAGS = -c -g -Wall -Wextra -Wpedantic -Werror
-INC = -I./include
-TEX = -I./textures
-BUILD = build
-SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
-	  ./src/Event.cpp ./src/UnixApi/ChronoX.cpp ./src/TimerCreator.cpp \
-	  ./src/VertexData.cpp ./src/Systems/CollisionSystem.cpp ./src/Systems/AnimationSystem.cpp \
-	  ./src/Systems/PhysicsSystem.cpp ./src/ComponentManager.cpp ./src/EntityManager.cpp ./src/Systems/MovementSystem.cpp \
-	  ./src/SystemManager.cpp ./src/Systems/ProjectileSystem.cpp \
-	  ./src/UnixApi/SoundEngineAlsa.cpp ./src/SoundEngineFactory.cpp ./src/GraphicAPI/Vulkan.cpp \
-	  ./src/TextureManager.cpp ./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
-	  ./src/UnixApi/WindowXVulkan.cpp ./src/UnixApi/WindowXCBVulkan.cpp \
-	  ./textures/chelik.cpp ./textures/witch.cpp ./textures/crosshair.cpp ./textures/gray.cpp \
-	  ./textures/container2.cpp ./textures/container2_specular.cpp \
-	  ./src/Systems/DamageSystem.cpp ./src/Systems/EnemySystem.cpp ./textures/fontAtlas.cpp ./textures/inventorySlot.cpp \
-	  ./src/Systems/ItemSystem.cpp ./src/ProceduralLevelGeneratingSystem.cpp ./src/Network/UDP_ServerLinux.cpp \
-	  ./src/Network/UDP_ClientLinux.cpp ./src/UnixApi/WindowWaylandVulkan.cpp \
-	  ./src/UnixApi/WaylandVariables.cpp ./textures/tileset.cpp \
-	  ./src/Systems/InventorySystem.cpp ./src/GraphicAPI/VkBuilders.cpp \
-	  ./src/GraphicAPI/RenderData.cpp ./src/GraphicAPI/VkDebugUtils.cpp \
-	  ./src/ThreadPool.cpp ./src/ArchetypedECS/ArchECS_Utils.cpp \
-	  ./src/ArchetypedECS/ArchECS_World.cpp ./src/ArchetypedECS/ArchetypeEntityManager.cpp \
-	  ./src/ArchetypedECS/ArchetypeInterface.cpp ./src/Systems/SpatialGridSystem.cpp \
-	  ./src/Common/CommonFunctions.cpp ./src/TextureLoadingUtils.cpp \
+# GLVM Linux build (Wayland backend, Vulkan).
+#
+#   make -f MakefileLin -j$(nproc)              release-like build: build/linGame (-O2 -g)
+#   make -f MakefileLin SANITIZE=1 -j$(nproc)   ASan + UBSan build: build/linGame-asan (separate objects)
+#   make -f MakefileLin WERROR=1                treat warnings as errors
+#   make -f MakefileLin run                     build and start the game
+#   make -f MakefileLin clean
+#
+# The executable must stay in build/: resources are looked up as ../<dir>/ relative to the executable.
 
-SOURCES_C = xdg-shell-protocol.c pointer-constraints-unstable-v1-protocol.c relative-pointer-unstable-v1-protocol.c
-OBJECTS = $(SOURCES:./src/%.cpp=$(BUILD)/%.o)
-OBJECTS_C = $(SOURCES_C:%.c=$(BUILD)/%.o)
+ifeq ($(origin CXX),default)
+CXX = clang++
+endif
+ifeq ($(origin CC),default)
+CC = clang
+endif
+
+SANITIZE ?= 0
+WERROR   ?= 0
+
+BUILD     = build
+WARNINGS  = -Wall -Wextra -Wpedantic
+CPPFLAGS += -I./include -I./textures -MMD -MP
+CXXFLAGS += -std=c++20 -O2 -g $(WARNINGS)
+CFLAGS   += -O2 -g $(WARNINGS)
+LDLIBS   += -lvulkan -lwayland-client -lxcb -lX11 -lasound -pthread
+
+ifeq ($(WERROR),1)
+CXXFLAGS += -Werror
+CFLAGS   += -Werror
+endif
+
+ifeq ($(SANITIZE),1)
+SANITIZE_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
+CXXFLAGS += $(SANITIZE_FLAGS)
+CFLAGS   += $(SANITIZE_FLAGS)
+LDFLAGS  += $(SANITIZE_FLAGS)
+OBJ_DIR    = $(BUILD)/obj-asan
+EXECUTABLE = linGame-asan
+else
+OBJ_DIR    = $(BUILD)/obj
 EXECUTABLE = linGame
+endif
 
-all: $(EXECUTABLE)
+include make_files/sources.mk
 
-$(EXECUTABLE): $(OBJECTS) $(OBJECTS_C)
-	$(CC) $(LDFLAGS) $(SANITIZE) $(OBJECTS) $(OBJECTS_C) -o $(BUILD)/$@
+SOURCES         = $(GLVM_COMMON_SOURCES) $(GLVM_LINUX_SOURCES)
+TEXTURE_SOURCES = $(GLVM_TEXTURE_SOURCES)
+SOURCES_C       = $(GLVM_LINUX_C_SOURCES)
 
-$(BUILD)/%.o : ./src/%.cpp
-	mkdir -p $(@D)
-	$(CC) $(INC) $(TEX) $(SANITIZE) $(CXXFLAGS) $< -o $@
+OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES) $(TEXTURE_SOURCES)) \
+	  $(patsubst ./%.c,$(OBJ_DIR)/%.o,$(SOURCES_C))
+TARGET  = $(BUILD)/$(EXECUTABLE)
 
-$(BUILD)/%.o : %.c
-	$(C) $(INC) $(TEX) $(SANITIZE) $(CFLAGS) $< -o $@
+.PHONY: all run clean wayland-protocols udp-client
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CXX) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
+
+$(OBJ_DIR)/%.o: ./%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/%.o: ./%.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+run: $(TARGET)
+	cd $(BUILD) && ./$(EXECUTABLE)
+
+# Small UDP test client (src/Network/clientMain.cpp) talking to UDP_ServerLinux
+udp-client: $(BUILD)/udpClient
+
+$(BUILD)/udpClient: $(OBJ_DIR)/src/Network/clientMain.o $(OBJ_DIR)/src/Network/UDP_ClientLinux.o
+	$(CXX) $(LDFLAGS) $^ -o $@
 
 clean:
-	rm -rf $(BUILD)/*
+	rm -rf $(BUILD)/obj $(BUILD)/obj-asan $(BUILD)/linGame $(BUILD)/linGame-asan $(BUILD)/udpClient
+
+# Regenerate the protocol glue (needs wayland-scanner from wayland-devel)
+WAYLAND_SCANNER ?= wayland-scanner
+wayland-protocols:
+	$(WAYLAND_SCANNER) client-header WaylandProtocols/xdg-shell.xml include/UnixApi/xdg-shell-client-protocol.h
+	$(WAYLAND_SCANNER) private-code WaylandProtocols/xdg-shell.xml xdg-shell-protocol.c
+	$(WAYLAND_SCANNER) client-header WaylandProtocols/pointer-constraints-unstable-v1.xml include/UnixApi/pointer-constraints-unstable-v1-client-protocol.h
+	$(WAYLAND_SCANNER) private-code WaylandProtocols/pointer-constraints-unstable-v1.xml pointer-constraints-unstable-v1-protocol.c
+	$(WAYLAND_SCANNER) client-header WaylandProtocols/relative-pointer-unstable-v1.xml include/UnixApi/relative-pointer-unstable-v1-client-protocol.h
+	$(WAYLAND_SCANNER) private-code WaylandProtocols/relative-pointer-unstable-v1.xml relative-pointer-unstable-v1-protocol.c
+
+-include $(OBJECTS:.o=.d)

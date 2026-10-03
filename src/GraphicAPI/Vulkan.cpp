@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <algorithm>
 #include <exception>
 #include <string>
 #include <thread>
@@ -55,6 +56,33 @@ namespace GLVM::core
 		mainRenderDrawFrame();
     }
 
+	u32 CVulkanRenderer::perFrameDescriptorNumber( DescriptorSetDataLink descriptorSetDataLink ) const {
+		return descriptorSetsConfig[descriptorSetDataLink].hostDescriptorNumber / MAX_FRAMES_IN_FLIGHT;
+	}
+
+	/// Pointer to the uniform slot 'index' of the first (uniform buffer) binding of the descriptor set.
+	/// Slots are uboChunkSize apart, the same stride that is used for descriptor buffer offsets.
+	template<class T>
+	T* CVulkanRenderer::mappedUBO( DescriptorSetDataLink descriptorSetDataLink, u32 index ) {
+		const DescriptorBinding& binding = descriptorBindingsConfig[descriptorSetsConfig[descriptorSetDataLink].descriptorsBindingsIDs[0]];
+		char* mappedData = static_cast<char*>(GPUDescriptors[binding.globalDescriptorOffset].GPUBuffer->mapedDataPtr);
+		return reinterpret_cast<T*>(mappedData + index * binding.uboChunkSize);
+	}
+
+	/// Texture descriptor sets are stored per texture per frame in flight. Unknown texture ids fall back to
+	/// texture 0 instead of indexing into a neighbouring descriptor set chunk.
+	VkDescriptorSet* CVulkanRenderer::textureDescriptorSet( const DescriptorSet& descriptorSet, u32 textureID ) {
+		if ( textureID >= initializeTextureData_.size() )
+			textureID = 0;
+		return descriptorSetsChunks.GetVectorContainer() + descriptorSet.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * textureID + currentFrame;
+	}
+
+	void CVulkanRenderer::reportUboOverflow( SpecificPipeline pipeline ) {
+		const uint32_t pipelineBit = 1u << pipeline;
+		if ( !(reportedUboOverflows.fetch_or(pipelineBit) & pipelineBit) )
+			std::cerr << "Renderer: out of uniform slots for pipeline " << pipeline << ", extra draws are skipped" << std::endl;
+	}
+
     void CVulkanRenderer::SetViewMatrix(mat4 _viewMatrix) {
         viewMatrix = _viewMatrix; // 
     }
@@ -68,7 +96,10 @@ namespace GLVM::core
 		uint32_t texWidth, texHeight;
 		[[maybe_unused]] uint32_t texChannels;
 
-		unsigned int readableTextureDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::RIDABLE_TEXTURES].descriptorsBindingsIDs[0];		
+		unsigned int readableTextureDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::RIDABLE_TEXTURES].descriptorsBindingsIDs[0];
+		if ( initializeTextureData_.size() > MAX_TEXTURES ) {
+			throw std::runtime_error("too many textures loaded, increase MAX_TEXTURES");
+		}
         for(unsigned int i = 0; i < initializeTextureData_.size(); ++i)
         {
 			VkDeviceSize imageSize{};
@@ -132,27 +163,37 @@ namespace GLVM::core
     }
 
     void CVulkanRenderer::recreateSwapChain() {
-        vkDeviceWaitIdle(device);
-
 #ifdef VK_USE_PLATFORM_XCB_KHR
 		Window->configureWindow();
 #endif
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 		Window->configureWindow();
-#endif	
-		aspectRate = (float)Window->width / (float)Window->height;
-		
+#endif
+		/// A zero sized surface (minimized window) can't have a swapchain, retry on the next frame.
+		const SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
+		const VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
+		if ( extent.width == 0 || extent.height == 0 ) {
+			swapChainRecreatePending = true;
+			return;
+		}
+		swapChainRecreatePending = false;
+
+        vkDeviceWaitIdle(device);
         cleanupSwapChain();
-		
+
+		/// Only window size dependent resources are recreated. Shadow maps and descriptor sets don't depend on the swapchain.
         createSwapChain();
         createImageViews();
         createDepthResources();
-		createDirectionalLightShadowMapDepthResources();
-		createSpotLightShadowMapDepthResources();
-		createPointLightShadowMapDepthResources();
 		createFramebuffers();
-		createMainRenderDescriptorSets();
+		aspectRate = (float)swapChainExtent.width / (float)swapChainExtent.height;
+
+		/// Present semaphores are indexed by swapchain image, their number has to follow the image count.
+		if ( renderFinishedSemaphores.size() != swapChainImages.size() ) {
+			destroyRenderFinishedSemaphores();
+			createRenderFinishedSemaphores();
+		}
     }
 
     void CVulkanRenderer::SetMeshData(std::vector<const char*> _pathsArray, core::vector<const char*> pathsGLTF) {
@@ -174,19 +215,7 @@ namespace GLVM::core
 		
         initWindow();
         initVulkan();
-
-        mapMemoryUBO(SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE, DescriptorSetDataLink::SHADOW_MAP_DIRECTIONAL_LIGHT, sizeof(ShadowMapMatrixUBO));
-        mapMemoryUBO(SpecificPipeline::SPOT_LIGHT_PIPELINE, DescriptorSetDataLink::SHADOW_MAP_SPOT_LIGHT, sizeof(ShadowMapMatrixUBO));
-        mapMemoryUBO(SpecificPipeline::POINT_LIGHT_PIPELINE, DescriptorSetDataLink::SHADOW_MAP_POINT_LIGHT, sizeof(PointLightShadowMapMatrixUBO));
-        mapMemoryUBO(SpecificPipeline::MAIN_RENDER_PIPELINE, DescriptorSetDataLink::MAIN_RENDER_MATRIX_UBO, sizeof(ModelMatrixUBO));
-        mapMemoryUBO(SpecificPipeline::HUD_PIPELINE, DescriptorSetDataLink::HUD, sizeof(HUD_UBO));
-        mapMemoryUBO(SpecificPipeline::FONT_PIPELINE, DescriptorSetDataLink::FONT_RENDER_UBO, sizeof(FONT_UBO));
-        mapMemoryUBO(SpecificPipeline::UI_PIPELINE, DescriptorSetDataLink::UI, sizeof(UI_UBO));
-        mapMemoryUBO(SpecificPipeline::UI_ICONS_PIPELINE, DescriptorSetDataLink::UI_ICONS, sizeof(UI_UBO));
-        mapMemoryUBO(SpecificPipeline::COLLISIONS_DEBUG_PIPELINE, DescriptorSetDataLink::COLLISIONS_DEBUG_DATA, sizeof(COLLISIONS_DEBUG_UBO));
-        mapMemoryUBO(SpecificPipeline::HUD_SCREEN_PIPELINE, DescriptorSetDataLink::HUD_SCREEN, sizeof(HUD_SCREEN_UBO));
-        mapMemoryUBO(SpecificPipeline::MATH_OBJECTS_DEBUG_PIPELINE, DescriptorSetDataLink::MATH_OBJECTS_DEBUG_DATA, sizeof(COLLISIONS_DEBUG_UBO));
-		mapMemoryUBO(SpecificPipeline::MAIN_RENDER_PIPELINE, DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO, sizeof(LightData), 1);
+		mapUniformBuffers();
     }
     
     void CVulkanRenderer::initWindow() {
@@ -293,9 +322,7 @@ namespace GLVM::core
 			createCommandPool(secondaryBuffersCommandPools[i]);
 		}
         createDepthResources();
-		createDirectionalLightShadowMapDepthResources();
-		createSpotLightShadowMapDepthResources();
-		createPointLightShadowMapDepthResources();
+		createShadowMapResources();
         createFramebuffers();
         createTextureImage();
         createTextureImageView();
@@ -317,12 +344,13 @@ namespace GLVM::core
 		createCommandBuffers(mainRenderCommandPool, mainRenderCommandBuffers,
 							 mainRenderCommandBuffersNumber, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
+		/// Secondary buffers are allocated for the maximum number of lights, the number of lights may change at runtime.
 		createCommandBuffers(secondaryBuffersCommandPools[0], directionalLightSecondaryCommandBuffers,
-							 directionalLightNumber, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+							 DIRECTIONAL_LIGHTS_NUMBER, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 		createCommandBuffers(secondaryBuffersCommandPools[1], spotLightSecondaryCommandBuffers,
-							 spotLightNumber, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+							 SPOT_LIGHTS_NUMBER, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 		createCommandBuffers(secondaryBuffersCommandPools[2], pointLightSecondaryCommandBuffers,
-							 pointLightNumber * 6 * 16, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+							 POINT_LIGHTS_NUMBER * CUBE_MAP_LAYER_NUMBER, VK_COMMAND_BUFFER_LEVEL_SECONDARY);
 		// createSyncObjects(directionalLightShadowMapImageAvailableSemaphores,
 		// 				  directionalLightShadowMapRenderFinishedSemaphores,
 		// 				  directionalLightShadowMapInFlightFences);
@@ -406,10 +434,14 @@ namespace GLVM::core
 			  5, 4, 7, 6, 5, 7,
 			  3, 2, 6, 7, 3, 6 };
 
-		for ( unsigned int i = 0; i < 36; ++i )
-			collisionsWireframeIndices.push_back(boxIndicesForIndexBuffer[i]);
-			
-		for ( unsigned int i = 0; i < allMeshMaxAbsoluteValues.GetSize(); ++i ) {
+		/// The function is called again whenever the engine resets isCollisionsWireframeBuffersInitialized, so it only
+		/// creates buffers for meshes that don't have them yet. Recreating all of them used to leak the old buffers.
+		if ( collisionsWireframeIndices.empty() ) {
+			for ( unsigned int i = 0; i < 36; ++i )
+				collisionsWireframeIndices.push_back(boxIndicesForIndexBuffer[i]);
+		}
+
+		for ( unsigned int i = collisionsWireframesVKBuffers.GetSize(); i < allMeshMaxAbsoluteValues.GetSize(); ++i ) {
 			core::vector<core::Vertex> vertices;
 			unsigned int cube_vertices = 8;
 
@@ -515,20 +547,6 @@ namespace GLVM::core
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
 
-        for (VkFramebuffer& framebuffer : directionalLightShadowMapFrameBuffers) {
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
-        }
-
-		for (VkFramebuffer& framebuffer : spotLightShadowMapFrameBuffers) {
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
-        }
-
-		for (std::vector<VkFramebuffer>& inner_vector : pointLightShadowMapFrameBuffers) {
-			for (VkFramebuffer& framebuffer : inner_vector) {
-				vkDestroyFramebuffer(device, framebuffer, nullptr);
-			} 
-        }
-
         for (VkImageView& imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr);
         }
@@ -536,8 +554,33 @@ namespace GLVM::core
         vkDestroySwapchainKHR(device, swapChain, nullptr);
     }
 
+	void CVulkanRenderer::destroyShadowMapFramebuffers() {
+        for (VkFramebuffer& framebuffer : directionalLightShadowMapFrameBuffers) {
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+			framebuffer = VK_NULL_HANDLE;
+        }
+
+		for (VkFramebuffer& framebuffer : spotLightShadowMapFrameBuffers) {
+            vkDestroyFramebuffer(device, framebuffer, nullptr);
+			framebuffer = VK_NULL_HANDLE;
+        }
+
+		for (std::vector<VkFramebuffer>& inner_vector : pointLightShadowMapFrameBuffers) {
+			for (VkFramebuffer& framebuffer : inner_vector) {
+				vkDestroyFramebuffer(device, framebuffer, nullptr);
+				framebuffer = VK_NULL_HANDLE;
+			}
+        }
+	}
+
     void CVulkanRenderer::cleanup() {
         cleanupSwapChain();
+
+		/// Worker threads only record command buffers, they have to be stopped before the device is destroyed.
+		delete renderThreadPool;
+		renderThreadPool = nullptr;
+
+		destroyShadowMapFramebuffers();
 
 		u32 descriptorIndex = 0;
 		for( u32 i = 0; i < actualDescriptorBindingsConfigNumber; ++i ) {
@@ -568,25 +611,20 @@ namespace GLVM::core
 			vkDestroyBuffer(device, collisionsWireframesIndicesVKBuffers[i], nullptr);
 			vkFreeMemory(device, collisionsWireframesIndicesVKDeviceMemory[i], nullptr);
 		}
-		
-		vkDestroyBuffer(device, hudUniformBuffer, nullptr);
-		vkFreeMemory(device, hudUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, fontUniformBuffer, nullptr);
-		vkFreeMemory(device, fontUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, hudScreenUniformBuffer, nullptr);
-		vkFreeMemory(device, hudScreenUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, uiUniformBuffer, nullptr);
-		vkFreeMemory(device, uiUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, uiIconsUniformBuffer, nullptr);
-		vkFreeMemory(device, uiIconsUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, shadowMapDirectionalLightModelMatrixUniformBuffer, nullptr);
-		vkFreeMemory(device, shadowMapDirectionalLightModelMatrixUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, shadowMapPointLightModelMatrixUniformBuffer, nullptr);
-		vkFreeMemory(device, shadowMapPointLightModelMatrixUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, shadowMapSpotLightModelMatrixUniformBuffer, nullptr);
-		vkFreeMemory(device, shadowMapSpotLightModelMatrixUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, virtualTexturesUniformBuffer, nullptr);
-		vkFreeMemory(device, virtualTexturesUniformBufferMemory, nullptr);
+
+		for( size_t i = 0; i < spacialGridWireframesVKBuffers.GetSize(); ++i ) {
+			vkDestroyBuffer(device, spacialGridWireframesVKBuffers[i], nullptr);
+			vkFreeMemory(device, spacialGridWireframesVKDeviceMemory[i], nullptr);
+		}
+
+		for ( size_t j = 0; j < mathObjectsVertexBufferContainer.size(); ++j ) {
+			vkDestroyBuffer(device, mathObjectsVertexBufferContainer[j], nullptr);
+			vkFreeMemory(device, mathObjectsVertexBufferMemoryContainer[j], nullptr);
+		}
+		for ( size_t j = 0; j < mathObjectsIndexBufferContainer.size(); ++j ) {
+			vkDestroyBuffer(device, mathObjectsIndexBufferContainer[j], nullptr);
+			vkFreeMemory(device, mathObjectsIndexBufferMemoryContaner[j], nullptr);
+		}
 
 		for ( size_t j = 0; j < vertexBufferContainer.size(); ++j ) {
 			vkDestroyBuffer(device, vertexBufferContainer[j], nullptr);
@@ -604,10 +642,6 @@ namespace GLVM::core
 			vkDestroyBuffer(device, fontIndexBufferContainer[fontIndicesContainer[j]], nullptr);
 			vkFreeMemory(device, fontIndexBufferMemoryContaner[fontIndicesContainer[j]], nullptr);
 		}
-		vkDestroyBuffer(device, modelMatrixUniformBuffer, nullptr);
-		vkFreeMemory(device, modelMatrixUniformBuffersMemory, nullptr);
-		vkDestroyBuffer(device, lightDataUniformBuffer, nullptr);
-		vkFreeMemory(device, lightDataUniformBuffersMemory, nullptr);
 
 		vkDeviceWaitIdle(device);
 
@@ -624,6 +658,7 @@ namespace GLVM::core
 		}
 		
 		vkDestroySampler(device, textureSampler, nullptr);
+		vkDestroySampler(device, shadowMapSampler, nullptr);
         for(unsigned int i = 0; i < textureImages.size(); ++i)
         {
             vkDestroySampler(device, textureImages[i].sampler, nullptr);
@@ -640,20 +675,9 @@ namespace GLVM::core
             vkDestroyFence(device, inFlightFences[i], nullptr);
         }
 
-		for( size_t i = 0; i < swapChainImages.size(); ++i ) {
-			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-		}
-		
-        vkDestroyCommandPool(device, directionalLightCommandPool, nullptr);
-		vkDestroyCommandPool(device, spotLightCommandPool, nullptr);
-		vkDestroyCommandPool(device, pointLightCommandPool, nullptr);
+		destroyRenderFinishedSemaphores();
+
 		vkDestroyCommandPool(device, mainRenderCommandPool, nullptr);
-		vkDestroyCommandPool(device, fontCommandPool, nullptr);
-		vkDestroyCommandPool(device, hudCommandPool, nullptr);
-		vkDestroyCommandPool(device, hudScreenCommandPool, nullptr);
-		vkDestroyCommandPool(device, uiCommandPool, nullptr);
-		vkDestroyCommandPool(device, uiIconsCommandPool, nullptr);
-		vkDestroyCommandPool(device, virtualTexturesCommandPool, nullptr);
 		for( uint32_t i = 0; i < secondaryBuffersCommandPools.size(); ++i ) {
 			vkDestroyCommandPool(device, secondaryBuffersCommandPools[i], nullptr);
 		}
@@ -804,6 +828,7 @@ namespace GLVM::core
         VkPhysicalDeviceFeatures deviceFeatures{};
         deviceFeatures.samplerAnisotropy = VK_TRUE;
 		deviceFeatures.fillModeNonSolid  = VK_TRUE;
+		deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE;    ///< Shadow map arrays are indexed by the light loop counter
 
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -868,8 +893,7 @@ namespace GLVM::core
 
         createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
         createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-//        createInfo.presentMode = presentMode;
-		createInfo.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        createInfo.presentMode = presentMode;
         createInfo.clipped = VK_TRUE;
 
         if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) != VK_SUCCESS) {
@@ -882,6 +906,9 @@ namespace GLVM::core
 
         swapChainImageFormat = surfaceFormat.format;
         swapChainExtent = extent;
+		/// Without a fixed surface extent (Wayland) nothing reports a resize, the renderer has to compare sizes itself.
+		swapChainExtentFollowsWindow = swapChainSupport.capabilities.currentExtent.width == (std::numeric_limits<uint32_t>::max)();
+		swapChainWindowSize = { Window->width, Window->height };
     }
 
     void CVulkanRenderer::createImageViews() {
@@ -1136,40 +1163,7 @@ namespace GLVM::core
 			createRenderPassFramebuffers(mainRenderAttachments, renderPasses[SpecificPipeline::MAIN_RENDER_PIPELINE], swapChainFramebuffers[i],
 										 swapChainExtent.width, swapChainExtent.height);
 		}
-
-		/// Directional lights shadow map renderer frame buffers initialization
-		unsigned int directionalLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[1];		
-		directionalLightShadowMapFrameBuffers.resize(DIRECTIONAL_LIGHTS_NUMBER);
-        for (size_t i = 0; i < DIRECTIONAL_LIGHTS_NUMBER; ++i) {
-			std::vector<VkImageView> directionalLightsRenderAttachments;
-			directionalLightsRenderAttachments.push_back((*GPUDescriptors[descriptorBindingsConfig[directionalLightDescriptorBindingIndex].globalDescriptorOffset + i].GPUImage).views[0]);
-			createRenderPassFramebuffers(directionalLightsRenderAttachments, renderPasses[SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE],
-										 directionalLightShadowMapFrameBuffers[i], swapChainExtent.width, swapChainExtent.height);
-		}
-
-		/// Spot lights shadow map renderer frame buffers initialization
-		unsigned int spotLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[3];
-		spotLightShadowMapFrameBuffers.resize(SPOT_LIGHTS_NUMBER);
-        for (size_t i = 0; i < SPOT_LIGHTS_NUMBER; ++i) {
-			std::vector<VkImageView> spotLightsRenderAttachments;
-			spotLightsRenderAttachments.push_back((*GPUDescriptors[descriptorBindingsConfig[spotLightDescriptorBindingIndex].globalDescriptorOffset + i].GPUImage).views[0]);
-			
-			createRenderPassFramebuffers(spotLightsRenderAttachments, renderPasses[SpecificPipeline::SPOT_LIGHT_PIPELINE],
-										 spotLightShadowMapFrameBuffers[i], swapChainExtent.width, swapChainExtent.height);
-		}
-
-		/// Point lights shadow map renderer frame buffers initialization
-		unsigned int descriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[2];
-		pointLightShadowMapFrameBuffers.resize(POINT_LIGHTS_NUMBER);
-		for ( size_t j = 0; j < POINT_LIGHTS_NUMBER; ++j ) {
-			for ( size_t m = 0; m < 6; ++m ) {
-				std::vector<VkImageView> pointLightsRenderAttachments;
-				pointLightsRenderAttachments.push_back((*GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + j].GPUImage).views[m]);
-				pointLightShadowMapFrameBuffers[j].push_back({});
-				createRenderPassFramebuffers(pointLightsRenderAttachments, renderPasses[SpecificPipeline::POINT_LIGHT_PIPELINE],
-											 pointLightShadowMapFrameBuffers[j][m], swapChainExtent.width, swapChainExtent.height);
-			}
-		}
+		/// Shadow map framebuffers don't depend on the swapchain, they are created by growShadowMaps().
     }
 
     void CVulkanRenderer::createRenderPassFramebuffers(std::vector<VkImageView>& attachments, VkRenderPass& renderPass_, VkFramebuffer& swapChainFramebuffer, uint32_t width, uint32_t height) {
@@ -1224,202 +1218,154 @@ namespace GLVM::core
         mainDepthImageView = createImageView(depthImage, 0, 1);
     }
 
-	void CVulkanRenderer::createDirectionalLightShadowMapDepthResources() {
-		unsigned int directionalLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[1];		
-		for ( unsigned int i = 0; i < DIRECTIONAL_LIGHTS_NUMBER; ++i ) {
-			VK_Image depthImage		 = {
-				.image				 = VkImage{},
-				.deviceMemory		 = VkDeviceMemory{},
-				.viewType			 = VK_IMAGE_VIEW_TYPE_2D,
-				.createFlags		 = 0,
-				.memoryPropertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				.usageFlags			 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				.aspectFlags         = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.format				 = findDepthFormat(),
-				.tiling				 = VK_IMAGE_TILING_OPTIMAL,
-				.arrayLayers		 = 1,
-				.width				 = swapChainExtent.width,
-				.height				 = swapChainExtent.height,
-			};
-
-			createImage(depthImage);
-			
-			VkCommandBuffer commandBuffer = beginSingleTimeCommands(mainRenderCommandPool);
-
-			VkImageMemoryBarrier barrier{};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = depthImage.image;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = 1;
-			barrier.subresourceRange.baseArrayLayer = 0;
-			barrier.subresourceRange.layerCount = 1;
-
-			VkPipelineStageFlags sourceStage;
-			VkPipelineStageFlags destinationStage;
-
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = 0;
-
-			sourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-
-			vkCmdPipelineBarrier(
-				commandBuffer,
-				sourceStage, destinationStage,
-				0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier
-				);
-
-			endSingleTimeCommands(mainRenderCommandPool, commandBuffer);
-			
-			depthImage.views.push_back(createImageView(depthImage, 0, 1));
-			vkDebugUtils::setImageDebugObjectName(device, depthImage, "directional light");
-			*GPUDescriptors[descriptorBindingsConfig[directionalLightDescriptorBindingIndex].globalDescriptorOffset + i].GPUImage = depthImage;
-		}
+	namespace {
+		constexpr uint32_t shadowMapsMaxNumber[SHADOW_MAP_TYPES_NUMBER] = { DIRECTIONAL_LIGHTS_NUMBER, SPOT_LIGHTS_NUMBER, POINT_LIGHTS_NUMBER };
+		const char* const  shadowMapNames[SHADOW_MAP_TYPES_NUMBER]      = { "directional light", "spot light", "point light cube" };
 	}
 
-	void CVulkanRenderer::createSpotLightShadowMapDepthResources() {
-		unsigned int spotLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[3];		
-		for ( unsigned int i = 0; i < SPOT_LIGHTS_NUMBER; ++i ) {
-			VK_Image depthImage		 = {
-				.image				 = VkImage{},
-				.deviceMemory		 = VkDeviceMemory{},
-				.viewType			 = VK_IMAGE_VIEW_TYPE_2D,
-				.createFlags		 = 0,
-				.memoryPropertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				.usageFlags			 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				.aspectFlags         = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.format				 = findDepthFormat(),
-				.tiling				 = VK_IMAGE_TILING_OPTIMAL,
-				.arrayLayers		 = 1,
-				.width				 = swapChainExtent.width,
-				.height				 = swapChainExtent.height,
-			};
+	/// Creates a depth image used as a shadow map (6 layers for a cube map). The image is cleared to the far plane
+	/// and left in the layout it is sampled in, so a placeholder is a valid "no shadow" map. The last view is the one
+	/// bound for sampling, cube maps also get one 2D view per face for rendering.
+	VK_Image CVulkanRenderer::createShadowMapImage( uint32_t size, bool isCube, const std::string& debugName ) {
+		VK_Image depthImage		 = {
+			.image				 = VkImage{},
+			.deviceMemory		 = VkDeviceMemory{},
+			.viewType			 = VK_IMAGE_VIEW_TYPE_2D,
+			.createFlags		 = isCube ? static_cast<VkImageCreateFlags>(VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) : 0u,
+			.memoryPropertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			.usageFlags			 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			.aspectFlags         = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.format				 = findDepthFormat(),
+			.tiling				 = VK_IMAGE_TILING_OPTIMAL,
+			.arrayLayers		 = isCube ? CUBE_MAP_LAYER_NUMBER : 1u,
+			.width				 = size,
+			.height				 = size
+		};
 
-			createImage(depthImage);
+		createImage(depthImage);
 
-			VkCommandBuffer commandBuffer = beginSingleTimeCommands(mainRenderCommandPool);
+		VkCommandBuffer commandBuffer = beginSingleTimeCommands(mainRenderCommandPool);
 
-			VkImageMemoryBarrier barrier{};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = depthImage.image;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = 1;
-			barrier.subresourceRange.baseArrayLayer = 0;
-			barrier.subresourceRange.layerCount = 1;
+		VkImageSubresourceRange subresourceRange{};
+		subresourceRange.aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT;
+		subresourceRange.baseMipLevel   = 0;
+		subresourceRange.levelCount     = 1;
+		subresourceRange.baseArrayLayer = 0;
+		subresourceRange.layerCount     = depthImage.arrayLayers;
 
-			VkPipelineStageFlags sourceStage;
-			VkPipelineStageFlags destinationStage;
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = depthImage.image;
+		barrier.subresourceRange = subresourceRange;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = 0;
+		const VkClearDepthStencilValue farPlaneDepth = { 1.0f, 0 };
+		vkCmdClearDepthStencilImage(commandBuffer, depthImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farPlaneDepth, 1, &subresourceRange);
 
-			sourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-			destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+							 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-			vkCmdPipelineBarrier(
-				commandBuffer,
-				sourceStage, destinationStage,
-				0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier
-				);
+		endSingleTimeCommands(mainRenderCommandPool, commandBuffer);
 
-			endSingleTimeCommands(mainRenderCommandPool, commandBuffer);
-			
+		if ( isCube ) {
+			for ( uint32_t face = 0; face < CUBE_MAP_LAYER_NUMBER; ++face )
+				depthImage.views.push_back(createImageView(depthImage, face, 1));
+
+			depthImage.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+			depthImage.views.push_back(createImageView(depthImage, 0, CUBE_MAP_LAYER_NUMBER));
+		} else {
 			depthImage.views.push_back(createImageView(depthImage, 0, 1));
-			vkDebugUtils::setImageDebugObjectName(device, depthImage, "spot light");
-			*GPUDescriptors[descriptorBindingsConfig[spotLightDescriptorBindingIndex].globalDescriptorOffset + i].GPUImage = depthImage;
 		}
+
+		vkDebugUtils::setImageDebugObjectName(device, depthImage, debugName);
+		return depthImage;
 	}
 
-	void CVulkanRenderer::createPointLightShadowMapDepthResources() {
-		unsigned int descriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[2];
-		for ( unsigned int i = 0; i < POINT_LIGHTS_NUMBER; ++i ) {
-			VK_Image depthImage		 = {
-				.image				 = VkImage{},
-				.deviceMemory		 = VkDeviceMemory{},
-				.viewType			 = VK_IMAGE_VIEW_TYPE_2D,
-				.createFlags		 = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-				.memoryPropertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				.usageFlags			 = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				.aspectFlags         = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.format				 = findDepthFormat(),
-				.tiling				 = VK_IMAGE_TILING_OPTIMAL,
-				.arrayLayers		 = 6,
-				.width				 = SHADOW_MAP_SIZE,
-				.height				 = SHADOW_MAP_SIZE
-			};
-			
-			createImage(depthImage);
+	VK_Image* CVulkanRenderer::shadowMapSlot( ShadowMapType type, uint32_t index ) {
+		/// Shadow map bindings of the light data descriptor set: 1 - directional, 2 - point (cube), 3 - spot.
+		const unsigned int lightDataBinding = type == DIRECTIONAL_SHADOW_MAP ? 1 : ( type == POINT_SHADOW_MAP ? 2 : 3 );
+		const unsigned int bindingID = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[lightDataBinding];
+		return GPUDescriptors[descriptorBindingsConfig[bindingID].globalDescriptorOffset + index].GPUImage;
+	}
 
-			for ( unsigned int j = 0; j < 6; ++j ) {
-				VkCommandBuffer commandBuffer = beginSingleTimeCommands(mainRenderCommandPool);
+	/// Every slot of the shadow map descriptor arrays needs a valid image. Slots get a 1x1 placeholder here and a full
+	/// size map only when a light uses them (see ensureShadowMaps): 32 full size cube maps would take 2.7 GiB.
+	/// Shadow maps don't depend on the window size, they are not recreated with the swapchain.
+	void CVulkanRenderer::createShadowMapResources() {
+		directionalLightShadowMapFrameBuffers.assign(DIRECTIONAL_LIGHTS_NUMBER, VK_NULL_HANDLE);
+		spotLightShadowMapFrameBuffers.assign(SPOT_LIGHTS_NUMBER, VK_NULL_HANDLE);
+		pointLightShadowMapFrameBuffers.assign(POINT_LIGHTS_NUMBER, std::vector<VkFramebuffer>(CUBE_MAP_LAYER_NUMBER, VK_NULL_HANDLE));
 
-				VkImageMemoryBarrier barrier{};
-				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-				barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-//				barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				barrier.image = depthImage.image;
-				barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-				barrier.subresourceRange.baseMipLevel = 0;
-				barrier.subresourceRange.levelCount = 1;
-				barrier.subresourceRange.baseArrayLayer = 0;
-				barrier.subresourceRange.layerCount = 6;
-
-				VkPipelineStageFlags sourceStage;
-				VkPipelineStageFlags destinationStage;
-
-				barrier.srcAccessMask = 0;
-				barrier.dstAccessMask = 0;
-
-				sourceStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-				destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-
-				vkCmdPipelineBarrier(
-					commandBuffer,
-					sourceStage, destinationStage,
-					0,
-					0, nullptr,
-					0, nullptr,
-					1, &barrier
-					);
-
-				endSingleTimeCommands(mainRenderCommandPool, commandBuffer);
-
-				
-				depthImage.views.push_back(createImageView(depthImage, j, 1));
+		for ( uint32_t type = 0; type < SHADOW_MAP_TYPES_NUMBER; ++type ) {
+			for ( uint32_t i = 0; i < shadowMapsMaxNumber[type]; ++i ) {
+				*shadowMapSlot(static_cast<ShadowMapType>(type), i) =
+					createShadowMapImage(1, type == POINT_SHADOW_MAP, std::string(shadowMapNames[type]) + " placeholder");
 			}
-
-			vkDebugUtils::setImageDebugObjectName(device, depthImage, "point light laryer");
-			*GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + i].GPUImage = depthImage;
-		}
-
-		for ( unsigned int i = 0; i < POINT_LIGHTS_NUMBER; ++i ) {
-		    (*GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + i].GPUImage).viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-
-			vkDebugUtils::setImageDebugObjectName(device, *GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + i].GPUImage, "point light cube");
-			(*GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + i].GPUImage).views.push_back(
-				createImageView(*GPUDescriptors[descriptorBindingsConfig[descriptorBindingIndex].globalDescriptorOffset + i].GPUImage, 0, 6));
+			allocatedShadowMapsNumber[type] = 0;
 		}
 	}
-	
+
+	/// Replaces placeholders of slots [allocated, requiredNumber) with full size shadow maps and their framebuffers.
+	/// The caller must make sure the placeholders are not used by the GPU anymore.
+	void CVulkanRenderer::growShadowMaps( ShadowMapType type, uint32_t requiredNumber ) {
+		const bool isCube = type == POINT_SHADOW_MAP;
+		for ( uint32_t i = allocatedShadowMapsNumber[type]; i < requiredNumber; ++i ) {
+			VK_Image* shadowMap = shadowMapSlot(type, i);
+			clearVK_Image(shadowMap);
+			*shadowMap = createShadowMapImage(SHADOW_MAP_SIZE, isCube, shadowMapNames[type]);
+
+			if ( type == DIRECTIONAL_SHADOW_MAP ) {
+				std::vector<VkImageView> attachments = { shadowMap->views[0] };
+				createRenderPassFramebuffers(attachments, renderPasses[SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE],
+											 directionalLightShadowMapFrameBuffers[i], SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+			} else if ( type == SPOT_SHADOW_MAP ) {
+				std::vector<VkImageView> attachments = { shadowMap->views[0] };
+				createRenderPassFramebuffers(attachments, renderPasses[SpecificPipeline::SPOT_LIGHT_PIPELINE],
+											 spotLightShadowMapFrameBuffers[i], SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+			} else {
+				for ( uint32_t face = 0; face < CUBE_MAP_LAYER_NUMBER; ++face ) {
+					std::vector<VkImageView> attachments = { shadowMap->views[face] };
+					createRenderPassFramebuffers(attachments, renderPasses[SpecificPipeline::POINT_LIGHT_PIPELINE],
+												 pointLightShadowMapFrameBuffers[i][face], SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+				}
+			}
+		}
+
+		if ( requiredNumber > allocatedShadowMapsNumber[type] )
+			allocatedShadowMapsNumber[type] = requiredNumber;
+	}
+
+	/// Called before a frame is recorded: lights without a full size shadow map get one. Replaced placeholders may be
+	/// referenced by frames in flight, so the device is idled first. This only happens when the number of lights grows.
+	void CVulkanRenderer::ensureShadowMaps() {
+		const uint32_t requiredNumber[SHADOW_MAP_TYPES_NUMBER] = { directionalLightNumber, spotLightNumber, pointLightNumber };
+		bool isGrowNeeded = false;
+		for ( uint32_t type = 0; type < SHADOW_MAP_TYPES_NUMBER; ++type ) {
+			if ( requiredNumber[type] > allocatedShadowMapsNumber[type] )
+				isGrowNeeded = true;
+		}
+
+		if ( !isGrowNeeded )
+			return;
+
+		vkDeviceWaitIdle(device);
+		for ( uint32_t type = 0; type < SHADOW_MAP_TYPES_NUMBER; ++type )
+			growShadowMaps(static_cast<ShadowMapType>(type), requiredNumber[type]);
+
+		updateLightDataDescriptorSets(descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO]);
+	}
+
     VkFormat CVulkanRenderer::findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) {
         for (VkFormat format : candidates) {
             VkFormatProperties props;
@@ -1477,6 +1423,19 @@ namespace GLVM::core
 		textureSampler = {};              /// TODO: Is it realy need here?
 		if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create texture sampler!");
+		}
+
+		/// Shadow maps must not wrap around: outside of the map the depth reads as the far plane (no shadow).
+		VkSamplerCreateInfo shadowSamplerInfo = samplerInfo;
+		shadowSamplerInfo.addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		shadowSamplerInfo.addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		shadowSamplerInfo.addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		shadowSamplerInfo.borderColor      = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		shadowSamplerInfo.anisotropyEnable = VK_FALSE;
+		shadowSamplerInfo.maxAnisotropy    = 1.0f;
+		shadowSamplerInfo.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		if (vkCreateSampler(device, &shadowSamplerInfo, nullptr, &shadowMapSampler) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create shadow map sampler!");
 		}
     }
 
@@ -1585,53 +1544,6 @@ namespace GLVM::core
         endSingleTimeCommands(mainRenderCommandPool, commandBuffer);
     }
 
-    void CVulkanRenderer::transitionShadowMapImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout) {
-        VkCommandBuffer commandBuffer = beginSingleTimeCommands(directionalLightCommandPool);
-
-        VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout = oldLayout;
-        barrier.newLayout = newLayout;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = image;
-        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
-
-        VkPipelineStageFlags sourceStage;
-        VkPipelineStageFlags destinationStage;
-
-        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        } else {
-            throw std::invalid_argument("unsupported layout transition!");
-        }
-
-        vkCmdPipelineBarrier(
-            commandBuffer,
-            sourceStage, destinationStage,
-            0,
-            0, nullptr,
-            0, nullptr,
-            1, &barrier
-            );
-
-        endSingleTimeCommands(directionalLightCommandPool, commandBuffer);
-    }
-	
     void CVulkanRenderer::copyBufferToImage(VkBuffer& buffer, VkImage image, uint32_t width, uint32_t height) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands(mainRenderCommandPool);
 
@@ -1701,13 +1613,20 @@ namespace GLVM::core
 	// }
 	
     void CVulkanRenderer::createMainRenderUniformBuffers() {
+		/// Uniform slots are addressed by descriptor offsets, so the slot stride has to respect the device alignment.
+		VkPhysicalDeviceProperties properties{};
+		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+		const VkDeviceSize uboOffsetAlignment = properties.limits.minUniformBufferOffsetAlignment;
+
 		for( unsigned int descriptorSetConfigCounter = 0; descriptorSetConfigCounter <
 				 DescriptorSetDataLink::DESCRIPTOR_CHUNKS_NUMBER; ++descriptorSetConfigCounter ) {
 			for( unsigned int j = 0; j < descriptorSetsConfig[descriptorSetConfigCounter].actualLinkedDescriptorBindingsNumber; ++j ) {
 				unsigned int descriptorBindingIndex = descriptorSetsConfig[descriptorSetConfigCounter].descriptorsBindingsIDs[j];
 				VkDescriptorType descriptorType = descriptorBindingsConfig[descriptorBindingIndex].vkType;
 				if( descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
-					u32 memory = descriptorBindingsConfig[descriptorBindingIndex].uboChunkSize * descriptorSetsConfig[descriptorSetConfigCounter].hostDescriptorNumber;
+					VkDeviceSize& uboChunkSize = descriptorBindingsConfig[descriptorBindingIndex].uboChunkSize;
+					uboChunkSize = (uboChunkSize + uboOffsetAlignment - 1) / uboOffsetAlignment * uboOffsetAlignment;
+					VkDeviceSize memory = uboChunkSize * descriptorSetsConfig[descriptorSetConfigCounter].hostDescriptorNumber;
 					// std::cout << "ds binding index: " << descriptorBindingIndex << std::endl;
 					// std::cout << "host ds number: " << descriptorSetsConfig[descriptorBindingIndex].hostDescriptorNumber << std::endl;
 					// std::cout << "chunk size: " << descriptorBindingsConfig[descriptorBindingIndex].uboChunkSize << std::endl;
@@ -1780,52 +1699,40 @@ namespace GLVM::core
 	}
 
 	void CVulkanRenderer::updateLightDataDescriptorSets( const DescriptorSet& currentDescriptorSet1 ) {
-		const unsigned int linkedDescriptorSetBindingsNumber = currentDescriptorSet1.actualLinkedDescriptorBindingsNumber;
-		core::vector<u32> shaderBindings;
-		core::vector<u32> descriptorNumberPerBinding;
-		core::vector<u32> bindingsIDs;
-		for ( size_t j = 0; j < linkedDescriptorSetBindingsNumber; ++j ) {
-			shaderBindings.Push( descriptorBindingsConfig[currentDescriptorSet1.descriptorsBindingsIDs[j]].binding );
-			bindingsIDs.Push( currentDescriptorSet1.descriptorsBindingsIDs[j] );
-		}
+		const unsigned int bindingsNumber = currentDescriptorSet1.actualLinkedDescriptorBindingsNumber;
 
+		/// All info storage is sized up front, so the pointers kept in descriptorWrites stay valid until vkUpdateDescriptorSets.
+		std::vector<VkWriteDescriptorSet> descriptorWrites(bindingsNumber);
+		std::vector<VkDescriptorBufferInfo> descriptorBufferInfos(bindingsNumber);
+		std::vector<std::vector<VkDescriptorImageInfo>> descriptorImageInfos(bindingsNumber);
 		for ( size_t i = 0; i < currentDescriptorSet1.hostDescriptorNumber; ++i ) {
-			core::vector<VkWriteDescriptorSet> descriptorWrites;
-			descriptorWrites.Resize( shaderBindings.GetSize() );
-			core::vector<VkDescriptorBufferInfo> descriptorBufferInfos;
-			core::vector<core::vector<VkDescriptorImageInfo>> descriptorImageInfos;
-			for( size_t j = 0; j < shaderBindings.GetSize(); ++j ) {
-				if( descriptorBindingsConfig[bindingsIDs[j]].vkType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
-					descriptorBufferInfos.Push({});
-
-					for( size_t m = 0; m < descriptorBindingsConfig[bindingsIDs[j]].shaderDescriptorsNumber; ++m ) {
-						descriptorBufferInfos[j] = createDescriptorBufferInfo(
-							GPUDescriptors[descriptorBindingsConfig[bindingsIDs[j]].globalDescriptorOffset].GPUBuffer->buffer,
-							descriptorBindingsConfig[bindingsIDs[j]].uboChunkSize, i );
+			for( size_t j = 0; j < bindingsNumber; ++j ) {
+				const DescriptorBinding& binding = descriptorBindingsConfig[currentDescriptorSet1.descriptorsBindingsIDs[j]];
+				descriptorWrites[j] = {};
+				if( binding.vkType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
+					/// Uniform buffer bindings hold one descriptor, set i points to uniform slot i.
+					descriptorBufferInfos[j] = createDescriptorBufferInfo( GPUDescriptors[binding.globalDescriptorOffset].GPUBuffer->buffer,
+																		   binding.uboChunkSize, i );
+					descriptorWrites[j].pBufferInfo = &descriptorBufferInfos[j];
+				} else if ( binding.vkType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ) {
+					/// Image arrays of non texture descriptor sets are shadow maps, the last view is the one to sample.
+					descriptorImageInfos[j].clear();
+					for( size_t m = 0; m < binding.shaderDescriptorsNumber; ++m ) {
+						const VK_Image& shadowMap = *GPUDescriptors[binding.globalDescriptorOffset + m].GPUImage;
+						descriptorImageInfos[j].push_back( createDescriptorImageInfo( shadowMap, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+																					  shadowMap.views.size() - 1, shadowMapSampler ) );
 					}
-					descriptorWrites[j].pBufferInfo = descriptorBufferInfos.GetVectorContainer();
-				} else if ( descriptorBindingsConfig[bindingsIDs[j]].vkType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ) {
-					descriptorImageInfos.Push({});
-
-					for( size_t m = 0; m < descriptorBindingsConfig[bindingsIDs[j]].shaderDescriptorsNumber; ++m ) {
-						u32 imageViewIndex = GPUDescriptors[descriptorBindingsConfig[bindingsIDs[j]].globalDescriptorOffset + m].GPUImage->views.size() - 1;
-
-						descriptorImageInfos[descriptorImageInfos.GetSize() - 1].Push({});
-						descriptorImageInfos[descriptorImageInfos.GetSize() - 1][m] = createDescriptorImageInfo(
-							*GPUDescriptors[descriptorBindingsConfig[bindingsIDs[j]].globalDescriptorOffset + m].GPUImage,
-							VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, imageViewIndex, textureSampler );
-					}
-					descriptorWrites[j].pImageInfo = descriptorImageInfos[descriptorImageInfos.GetSize() - 1].GetVectorContainer();
+					descriptorWrites[j].pImageInfo = descriptorImageInfos[j].data();
 				}
 				descriptorWrites[j].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 				descriptorWrites[j].dstSet = *(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet1.descriptorSetOffset + i);
-				descriptorWrites[j].dstBinding = shaderBindings[j];
+				descriptorWrites[j].dstBinding = binding.binding;
 				descriptorWrites[j].dstArrayElement = 0;
-				descriptorWrites[j].descriptorType = descriptorBindingsConfig[bindingsIDs[j]].vkType;
-				descriptorWrites[j].descriptorCount = descriptorBindingsConfig[bindingsIDs[j]].shaderDescriptorsNumber;
+				descriptorWrites[j].descriptorType = binding.vkType;
+				descriptorWrites[j].descriptorCount = binding.vkType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ? 1 : binding.shaderDescriptorsNumber;
 			}
-			
-			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.GetSize()), descriptorWrites.GetVectorContainer(), 0, nullptr);
+
+			vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 		}
 	}
 	
@@ -1835,9 +1742,15 @@ namespace GLVM::core
 			bindingsIDs.Push( descriptorSet.descriptorsBindingsIDs[j] );
 		}
 
-		unsigned int readableTextureDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::RIDABLE_TEXTURES].descriptorsBindingsIDs[0];		
+		unsigned int readableTextureDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::RIDABLE_TEXTURES].descriptorsBindingsIDs[0];
+		if ( initializeTextureData_.empty() ) {
+			return;
+		}
 		for (size_t i = 0; i < descriptorSet.hostDescriptorNumber; ++i) {
-			const unsigned int textureIndex = i / 2;
+			/// One set per texture per frame in flight. Sets of texture ids that are not loaded point to texture 0.
+			unsigned int textureIndex = i / MAX_FRAMES_IN_FLIGHT;
+			if ( textureIndex >= initializeTextureData_.size() )
+				textureIndex = 0;
 			constexpr unsigned int textureViewIndex = 0;
 			VkDescriptorImageInfo imageInfo = createDescriptorImageInfo( *GPUDescriptors[descriptorBindingsConfig[readableTextureDescriptorBindingIndex].globalDescriptorOffset + textureIndex].GPUImage, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, textureViewIndex, textureSampler );
 			core::vector<VkWriteDescriptorSet> descriptorWrites{};
@@ -2021,8 +1934,7 @@ namespace GLVM::core
 		hudUBO.entityPosition = healthBars[healthCounter].position;
 		hudUBO.highestY    = highestY;
 
-		unsigned int hudUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::HUD].descriptorsBindingsIDs[0];
-		HUD_UBO* hudMatrixData = (HUD_UBO*)(GPUDescriptors[descriptorBindingsConfig[hudUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		HUD_UBO* hudMatrixData = mappedUBO<HUD_UBO>(DescriptorSetDataLink::HUD, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(HUD_UBO));
 	}
 
@@ -2030,8 +1942,7 @@ namespace GLVM::core
 		HUD_SCREEN_UBO hudUBO{};
 		hudUBO.model = crosshairs[crosshair].model;
 		
-		unsigned int hudScreenUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::HUD_SCREEN].descriptorsBindingsIDs[0];
-		HUD_SCREEN_UBO* hudMatrixData = (HUD_SCREEN_UBO*)(GPUDescriptors[descriptorBindingsConfig[hudScreenUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		HUD_SCREEN_UBO* hudMatrixData = mappedUBO<HUD_SCREEN_UBO>(DescriptorSetDataLink::HUD_SCREEN, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(HUD_SCREEN_UBO));
 	}
 
@@ -2042,12 +1953,8 @@ namespace GLVM::core
 		float currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count() * 0.001;
 		hudUBO.iTime = currentTime;
 		
-		void* hudMatrixData;
-		unsigned int hudScreenUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::SDF_DATA].descriptorsBindingsIDs[0];		
-        vkMapMemory(device, GPUDescriptors[descriptorBindingsConfig[hudScreenUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->deviceMemory, sizeof(SDF_UBO) * offset,
-					sizeof(SDF_UBO), 0, &hudMatrixData);
+		SDF_UBO* hudMatrixData = mappedUBO<SDF_UBO>(DescriptorSetDataLink::SDF_DATA, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(SDF_UBO));
-        vkUnmapMemory(device, GPUDescriptors[descriptorBindingsConfig[hudScreenUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->deviceMemory);
 	}
 
 	void CVulkanRenderer::updateMathObjectsDebugUBO(uint32_t offset, uint32_t mathObject) {
@@ -2056,8 +1963,7 @@ namespace GLVM::core
 		hudUBO.view       = viewMatrix;
 		hudUBO.projection = projectionMatrix;
 		
-		unsigned int hudScreenUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MATH_OBJECTS_DEBUG_DATA].descriptorsBindingsIDs[0];
-		COLLISIONS_DEBUG_UBO* hudMatrixData = (COLLISIONS_DEBUG_UBO*)(GPUDescriptors[descriptorBindingsConfig[hudScreenUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		COLLISIONS_DEBUG_UBO* hudMatrixData = mappedUBO<COLLISIONS_DEBUG_UBO>(DescriptorSetDataLink::MATH_OBJECTS_DEBUG_DATA, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(COLLISIONS_DEBUG_UBO));
 	}
 	
@@ -2067,8 +1973,7 @@ namespace GLVM::core
 		collisionsDebugUBO.view       = viewMatrix;
 		collisionsDebugUBO.projection = projectionMatrix;
 
-		unsigned int hudScreenUboDescriptorBindingIndex = descriptorSetsConfig[descriptorSetLink].descriptorsBindingsIDs[0];
-		COLLISIONS_DEBUG_UBO* collisionsDebugData = (COLLISIONS_DEBUG_UBO*)(GPUDescriptors[descriptorBindingsConfig[hudScreenUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		COLLISIONS_DEBUG_UBO* collisionsDebugData = mappedUBO<COLLISIONS_DEBUG_UBO>(descriptorSetLink, offset);
         memcpy(collisionsDebugData, &collisionsDebugUBO, sizeof(COLLISIONS_DEBUG_UBO));
 	}
 	
@@ -2079,8 +1984,7 @@ namespace GLVM::core
 		hudUBO.model = inventories[inventory].slotData[colSize * currentInventoryRow + currentInventoryColumn].model;
 		hudUBO.color = inventories[inventory].slotData[colSize * currentInventoryRow + currentInventoryColumn].color;
 
-		unsigned int uiUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::UI].descriptorsBindingsIDs[0];
-		UI_UBO* hudMatrixData = (UI_UBO*)(GPUDescriptors[descriptorBindingsConfig[uiUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		UI_UBO* hudMatrixData = mappedUBO<UI_UBO>(DescriptorSetDataLink::UI, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(UI_UBO));
 	}
 
@@ -2088,8 +1992,7 @@ namespace GLVM::core
 		UI_UBO hudUBO{};
 		hudUBO.model = items[item].model;
 		
-		unsigned int uiIconsUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::UI_ICONS].descriptorsBindingsIDs[0];
-		UI_UBO* hudMatrixData = (UI_UBO*)(GPUDescriptors[descriptorBindingsConfig[uiIconsUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
+		UI_UBO* hudMatrixData = mappedUBO<UI_UBO>(DescriptorSetDataLink::UI_ICONS, offset);
         memcpy(hudMatrixData, &hudUBO, sizeof(UI_UBO));
 	}
 	
@@ -2137,14 +2040,20 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		const u32 hudUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::HUD);
 		for ( unsigned int i = 0; i < healthBars.GetSize(); ++i ) {
+			if ( i >= hudUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::HUD_PIPELINE);
+				break;
+			}
 			unsigned int uiVertexId = healthBars[i].meshID;
-			unsigned int uboIndex = currentFrame * hudUboDescriptorNumber + i;
+			unsigned int uboIndex = currentFrame * hudUboPerFrameNumber + i;
 			updateHudUBO(uboIndex, true, highest_gltf_Y[uiVertexId], i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::HUD_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
+			/// Descriptor set k reads uniform slot k, so the set has to be the one of the slot written above.
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::HUD_PIPELINE].pipelineLayout,
-									0, 1, &(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet.descriptorSetOffset + i)), 0, nullptr);
+									0, 1, &(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet.descriptorSetOffset + uboIndex)), 0, nullptr);
 
 			VkBuffer vertexBuffers[] = {vertexBufferContainer[uiVertexId]};
 			VkDeviceSize offsets[] = {0};
@@ -2205,13 +2114,19 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		const u32 uiUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::UI);
+		u32 uiSlot = 0;                                      ///< Slots are shared by all inventories of the frame
 		for ( unsigned int i = 0; i < inventories.GetSize(); ++i ) {
-			RenderInventory inventory = inventories[i];
+			const RenderInventory& inventory = inventories[i];
 			unsigned int inventoryTextureID   = inventory.inventoryTextureID;
 			unsigned int uiVertexId           = inventory.meshID;
 			for ( unsigned int j = 0; j < inventory.row; ++j ) {
 				for ( unsigned int m = 0; m < inventory.col; ++m ) {
-					unsigned int uboIndex = currentFrame * uiUboDescriptorsNumber + j * inventory.col + m;
+					if ( uiSlot >= uiUboPerFrameNumber ) {
+						reportUboOverflow(SpecificPipeline::UI_PIPELINE);
+						break;
+					}
+					unsigned int uboIndex = currentFrame * uiUboPerFrameNumber + uiSlot++;
 					updateUBO_UI(j, m, i, uboIndex);
 					const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::UI_PIPELINE].linkedDescriptorSetIDs[0];
 					const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2221,7 +2136,7 @@ namespace GLVM::core
 					const unsigned int linkedDescriptorSetID1 = pipelineConfigs[SpecificPipeline::UI_PIPELINE].linkedDescriptorSetIDs[1];
 					const DescriptorSet& currentDescriptorSet1 = descriptorSetsConfig[linkedDescriptorSetID1];
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::UI_PIPELINE].pipelineLayout,
-											1, 1, &(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet1.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * inventoryTextureID + currentFrame)), 0, nullptr);
+											1, 1, textureDescriptorSet(currentDescriptorSet1, inventoryTextureID), 0, nullptr);
 
 					VkBuffer vertexBuffers[] = {vertexBufferContainer[uiVertexId]};
 					VkDeviceSize offsets[] = {0};
@@ -2286,12 +2201,18 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		/// Each frame in flight owns a fixed range of slots, so a changing number of items can't overlap the other frame.
+		const u32 uiIconsUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::UI_ICONS);
 		for ( unsigned int i = 0; i < items.GetSize(); ++i ) {
-			RenderItem item = items[i];
+			if ( i >= uiIconsUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::UI_ICONS_PIPELINE);
+				break;
+			}
+			const RenderItem& item = items[i];
 			unsigned int uiVertexId = item.meshID;
 			unsigned int diffuseTexureID = item.diffuseTexureID;
-			unsigned int uboIndex = currentFrame * items.GetSize() + i;
-			
+			unsigned int uboIndex = currentFrame * uiIconsUboPerFrameNumber + i;
+
 			updateUBO_IconsUI(uboIndex, i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::UI_ICONS_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2301,7 +2222,7 @@ namespace GLVM::core
 			const unsigned int linkedDescriptorSetID1 = pipelineConfigs[SpecificPipeline::UI_ICONS_PIPELINE].linkedDescriptorSetIDs[1];
   			const DescriptorSet& currentDescriptorSet1 = descriptorSetsConfig[linkedDescriptorSetID1];
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::UI_ICONS_PIPELINE].pipelineLayout,
-									1, 1, &(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet1.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * diffuseTexureID + currentFrame)), 0, nullptr);
+									1, 1, textureDescriptorSet(currentDescriptorSet1, diffuseTexureID), 0, nullptr);
 
 			VkBuffer vertexBuffers[] = {vertexBufferContainer[uiVertexId]};
 			VkDeviceSize offsets[] = {0};
@@ -2364,11 +2285,16 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		const u32 hudScreenUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::HUD_SCREEN);
 		for ( unsigned int i = 0; i < crosshairs.GetSize(); ++i ) {
-			RenderCrosshair crosshair = crosshairs[i];
+			if ( i >= hudScreenUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::HUD_SCREEN_PIPELINE);
+				break;
+			}
+			const RenderCrosshair& crosshair = crosshairs[i];
 			unsigned int uiVertexId = crosshair.meshID;
 
-			unsigned int uboIndex = currentFrame * hudScreenUboDescriptorNumber + i;
+			unsigned int uboIndex = currentFrame * hudScreenUboPerFrameNumber + i;
 			updateHudScreenUBO(uboIndex, i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::HUD_SCREEN_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2436,11 +2362,16 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		const u32 sdfUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::SDF_DATA);
 		for ( unsigned int i = 0; i < crosshairs.GetSize(); ++i ) {
-			RenderCrosshair crosshair = crosshairs[i];
+			if ( i >= sdfUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::SDF_PIPELINE);
+				break;
+			}
+			const RenderCrosshair& crosshair = crosshairs[i];
 			unsigned int uiVertexId = crosshair.meshID;
 
-			unsigned int uboIndex = currentFrame * hudScreenUboDescriptorNumber + i;
+			unsigned int uboIndex = currentFrame * sdfUboPerFrameNumber + i;
 			updateSdfUBO(uboIndex, i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::SDF_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2460,10 +2391,7 @@ namespace GLVM::core
 		}
 
         vkCmdEndRenderPass(commandBuffer);
-
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to record command buffer!");
-        }
+		/// The main command buffer is ended in mainRenderDrawFrame.
     }
 
     void CVulkanRenderer::collisionsDebugRecordCommandBuffer(VkCommandBuffer& commandBuffer, uint32_t imageIndex) {
@@ -2510,13 +2438,20 @@ namespace GLVM::core
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 //		std::cout << "FRAME" << std::endl;
 
+		const u32 collisionsUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::COLLISIONS_DEBUG_DATA);
 		for ( unsigned int i = 0; i < collisionsWireframes.GetSize(); ++i ) {
-			[[maybe_unused]] RenderCollisionWireframe collisionWireframe = collisionsWireframes[i];
+			if ( i >= collisionsUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::COLLISIONS_DEBUG_PIPELINE);
+				break;
+			}
+			const RenderCollisionWireframe& collisionWireframe = collisionsWireframes[i];
 //			RenderCrosshair crosshair = crosshairs[i];
 //			unsigned int uiVertexId = crosshair.meshID;
 
 			const u32 meshID = collisionWireframe.meshID;
-			unsigned int uboIndex = currentFrame * hudScreenUboDescriptorNumber + i;
+			if ( meshID >= collisionsWireframesVKBuffers.GetSize() )
+				continue;                                    ///< Wireframe buffers of this mesh are not created yet
+			unsigned int uboIndex = currentFrame * collisionsUboPerFrameNumber + i;
 			updateCollisionsDebugUBO(uboIndex, collisionWireframe.model, DescriptorSetDataLink::COLLISIONS_DEBUG_DATA);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::COLLISIONS_DEBUG_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2585,12 +2520,17 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
+		const u32 mathObjectsUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::MATH_OBJECTS_DEBUG_DATA);
 		for ( unsigned int i = 0; i < mathObjects.GetSize(); ++i ) {
-			RenderMathObject mathObject = mathObjects[i];
+			if ( i >= mathObjectsUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::MATH_OBJECTS_DEBUG_PIPELINE);
+				break;
+			}
+			const RenderMathObject& mathObject = mathObjects[i];
 			unsigned int uiVertexId = mathObject.meshID;
 
-//			unsigned int uboIndex = currentFrame * hudScreenUboDescriptorNumber + i; ///< TODO: Have to figure out why frames in flight doesn't work
-			unsigned int uboIndex = hudScreenUboDescriptorNumber + i;
+			/// Each frame in flight writes its own slots, the frame the GPU may still read is not touched.
+			unsigned int uboIndex = currentFrame * mathObjectsUboPerFrameNumber + i;
 			updateMathObjectsDebugUBO(uboIndex, i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::MATH_OBJECTS_DEBUG_PIPELINE].linkedDescriptorSetIDs[0];
   			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2606,12 +2546,9 @@ namespace GLVM::core
 		}
 
         vkCmdEndRenderPass(commandBuffer);
-
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to record command buffer!");
-        }
+		/// The main command buffer is ended in mainRenderDrawFrame.
     }
-    
+
     void CVulkanRenderer::spacialGridDebugRecordCommandBuffer(VkCommandBuffer& commandBuffer, uint32_t imageIndex) {
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -2770,7 +2707,12 @@ namespace GLVM::core
 					translation[3][2] = i2 * chunkSize + halfSize - 4.0 + 1.0;
 					translation[3][3] = 1.0f;
 
-					unsigned int uboIndex = currentFrame * spacialGridWireFrameUboNumber + index;
+					const u32 spacialGridUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::SPACIAL_GRID_DEBUG_DATA);
+					if ( index >= spacialGridUboPerFrameNumber ) {
+						reportUboOverflow(SpecificPipeline::SPACIAL_GRID_DEBUG_PIPELINE);
+						continue;
+					}
+					unsigned int uboIndex = currentFrame * spacialGridUboPerFrameNumber + index;
 					updateCollisionsDebugUBO(uboIndex, scale * translation, DescriptorSetDataLink::SPACIAL_GRID_DEBUG_DATA);
 					const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::SPACIAL_GRID_DEBUG_PIPELINE].linkedDescriptorSetIDs[0];
 					const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2793,10 +2735,7 @@ namespace GLVM::core
 		}
 
         vkCmdEndRenderPass(commandBuffer);
-
-        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to record command buffer!");
-        }
+		/// The main command buffer is ended in mainRenderDrawFrame.
     }
 	
     void CVulkanRenderer::fontRecordCommandBuffer(VkCommandBuffer& commandBuffer, uint32_t imageIndex) {
@@ -2846,16 +2785,25 @@ namespace GLVM::core
 		for( unsigned int playerCounter = 0; playerCounter < players.GetSize(); ++playerCounter ) {
 			player = players[playerCounter];
 		}
-			unsigned int currentActorMemoryOffset = 0;
+			/// Every glyph gets its own uniform slot inside the range of the current frame in flight.
+			const u32 fontUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::FONT_RENDER_UBO);
+			u32 glyphSlot = 0;
 			for ( unsigned int i = 0; i < fonts.GetSize(); ++i ) {
-				RenderFont font = fonts[i];
+				RenderFont& font = fonts[i];
 				vec3 playerTragetDirection = font.position - player.position;
 				float dotProduct = Dot(playerTragetDirection, player.forward);
 				if ( dotProduct <= 0 )
 					continue;
 
 				for ( unsigned int j = 0; j < font.font_string.GetSize(); ++j ) {
-					unsigned int ascii_code = static_cast<unsigned int>(font.font_string[j]);
+					if ( glyphSlot >= fontUboPerFrameNumber ) {
+						reportUboOverflow(SpecificPipeline::FONT_PIPELINE);
+						break;
+					}
+					const unsigned int ascii_code = static_cast<unsigned char>(font.font_string[j]);
+					if ( ascii_code >= fontVertexBufferContainer.size() || fontVertexBufferContainer[ascii_code] == VK_NULL_HANDLE )
+						continue;                                ///< No glyph mesh for this character
+					const u32 uboIndex = currentFrame * fontUboPerFrameNumber + glyphSlot++;
 					VkBuffer vertexBuffers[] = { fontVertexBufferContainer[ascii_code] };
 					VkDeviceSize offsets[] = {0};
 				
@@ -2882,27 +2830,22 @@ namespace GLVM::core
 					ndcPosition[1] -= font.lifeTime / 5.0f;
 					fontUBO.position = ndcPosition;
 
-//					void* modelMatrixData;
-					unsigned int fontUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::FONT_RENDER_UBO].descriptorsBindingsIDs[0];
-					FONT_UBO* modelMatrixData = (FONT_UBO*)(GPUDescriptors[descriptorBindingsConfig[fontUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + currentActorMemoryOffset;
-					// vkMapMemory(device, GPUDescriptors[descriptorBindingsConfig[fontUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->deviceMemory, sizeof(fontUBO) * (currentActorMemoryOffset + j),
-					// 			sizeof(fontUBO), 0, &modelMatrixData);
+					/// The glyph data and the bound descriptor set must use the same slot.
+					FONT_UBO* modelMatrixData = mappedUBO<FONT_UBO>(DescriptorSetDataLink::FONT_RENDER_UBO, uboIndex);
 					memcpy(modelMatrixData, &fontUBO, sizeof(fontUBO));
-//					vkUnmapMemory(device, GPUDescriptors[descriptorBindingsConfig[fontUboDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->deviceMemory);
 
 					const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::FONT_PIPELINE].linkedDescriptorSetIDs[0];
 					const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::FONT_PIPELINE].pipelineLayout, 0, 1,
-											&(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet.descriptorSetOffset + currentActorMemoryOffset + j)), 0, nullptr);
+											&(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet.descriptorSetOffset + uboIndex)), 0, nullptr);
 					const unsigned int linkedDescriptorSetID1 = pipelineConfigs[SpecificPipeline::FONT_PIPELINE].linkedDescriptorSetIDs[1];
 					const unsigned int fontAtlasTextureID = 6;
 					const DescriptorSet& currentDescriptorSet1 = descriptorSetsConfig[linkedDescriptorSetID1];
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::FONT_PIPELINE].pipelineLayout, 1, 1,
-											&(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet1.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * fontAtlasTextureID + currentFrame)), 0, nullptr);
-			
+											textureDescriptorSet(currentDescriptorSet1, fontAtlasTextureID), 0, nullptr);
+
 					vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indicesContainerSize), 1, 0, 0, 0);
 				}
-				currentActorMemoryOffset += currentFrame * fontUboDescriptorNumber + font.font_string.GetSize();
 			}
 //		}
 
@@ -2965,13 +2908,18 @@ namespace GLVM::core
         scissor.extent = swapChainExtent;
         vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 		
+		const u32 matrixUboPerFrameNumber = perFrameDescriptorNumber(DescriptorSetDataLink::MAIN_RENDER_MATRIX_UBO);
 		for ( unsigned int i = 0; i < actors.GetSize(); ++i ) {
-			RenderActor actor = actors[i];
+			if ( i >= matrixUboPerFrameNumber ) {
+				reportUboOverflow(SpecificPipeline::MAIN_RENDER_PIPELINE);
+				break;
+			}
+			const RenderActor& actor = actors[i];
 			unsigned int uiVertexId = actor.meshID;
 			unsigned int diffuseTextureIndex = actor.diffuseTextureIndex;
 			unsigned int specularTextureIndex = actor.specularTextureIndex;
-				
-			unsigned int uboIndex = currentFrame * matrixUboDescriptorsNumber + i;
+
+			unsigned int uboIndex = currentFrame * matrixUboPerFrameNumber + i;
 			updateMatrixUniformBuffer(uboIndex, i);
 			const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::MAIN_RENDER_PIPELINE].linkedDescriptorSetIDs[0];
 			const DescriptorSet& currentDescriptorSet = descriptorSetsConfig[linkedDescriptorSetID];
@@ -2994,11 +2942,11 @@ namespace GLVM::core
 			const unsigned int linkedDescriptorSetID2 = pipelineConfigs[SpecificPipeline::MAIN_RENDER_PIPELINE].linkedDescriptorSetIDs[2];
 			const DescriptorSet& currentDescriptorSet2 = descriptorSetsConfig[linkedDescriptorSetID2];
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::MAIN_RENDER_PIPELINE].pipelineLayout, 2, 1,
-									&(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet2.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * specularTextureIndex + currentFrame)), 0, nullptr);
+									textureDescriptorSet(currentDescriptorSet2, specularTextureIndex), 0, nullptr);
 			const unsigned int linkedDescriptorSetID3 = pipelineConfigs[SpecificPipeline::MAIN_RENDER_PIPELINE].linkedDescriptorSetIDs[3];
 			const DescriptorSet& currentDescriptorSet3 = descriptorSetsConfig[linkedDescriptorSetID3];
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineConfigs[SpecificPipeline::MAIN_RENDER_PIPELINE].pipelineLayout, 3, 1,
-									&(*(descriptorSetsChunks.GetVectorContainer() + currentDescriptorSet3.descriptorSetOffset + MAX_FRAMES_IN_FLIGHT * diffuseTextureIndex + currentFrame)), 0, nullptr);
+									textureDescriptorSet(currentDescriptorSet3, diffuseTextureIndex), 0, nullptr);
 			
 			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indicesContainerSize), 1, 0, 0, 0);
 		}
@@ -3012,10 +2960,9 @@ namespace GLVM::core
     }
 
     void CVulkanRenderer::createSyncObjects(std::vector<VkSemaphore>& imageAvailableSemaphores,
-											std::vector<VkSemaphore>& renderFinishedSemaphores,
+											[[maybe_unused]] std::vector<VkSemaphore>& renderFinishedSemaphores,   ///< Created by createRenderFinishedSemaphores()
 											std::vector<VkFence>& inFlightFences) {
         imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-        renderFinishedSemaphores.resize(swapChainImages.size());
         inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 		
         VkSemaphoreCreateInfo semaphoreInfo{};
@@ -3032,51 +2979,70 @@ namespace GLVM::core
             }
         }
 
-		for (size_t i = 0; i < swapChainImages.size(); ++i) {
+		createRenderFinishedSemaphores();
+    }
+
+	/// Present semaphores are indexed by swapchain image, one per image.
+	void CVulkanRenderer::createRenderFinishedSemaphores() {
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        renderFinishedSemaphores.resize(swapChainImages.size());
+		for (size_t i = 0; i < renderFinishedSemaphores.size(); ++i) {
             if ( vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ) {
                 throw std::runtime_error("failed to create synchronization objects for a frame!");
             }
         }
-    }
-
-    void CVulkanRenderer::mapMemoryUBO( SpecificPipeline pipeline, DescriptorSetDataLink descriptorSetDataLink, u32 uboDataSize, u32 descriptorSetID ) {
-		unsigned int DescriptorBindingIndex = descriptorSetsConfig[descriptorSetDataLink].descriptorsBindingsIDs[0];
-		const unsigned int linkedDescriptorSetID = pipelineConfigs[pipeline].linkedDescriptorSetIDs[descriptorSetID];
-		u32 descriptorNumber = descriptorSetsConfig[linkedDescriptorSetID].hostDescriptorNumber;
-		std::cout << "ds number: " << descriptorNumber << std::endl;
-		vkMapMemory(device, GPUDescriptors[descriptorBindingsConfig[DescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->deviceMemory,
-                    0, uboDataSize * descriptorNumber, 0, &(GPUDescriptors[descriptorBindingsConfig[DescriptorBindingIndex]
-																		   .globalDescriptorOffset].GPUBuffer->mapedDataPtr));
 	}
-    
-    void CVulkanRenderer::updateDirectionalLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, unsigned int actor) {
-		unsigned int shadowMapDirectionalLightDescriptorBindingIndex =
-			descriptorSetsConfig[DescriptorSetDataLink::SHADOW_MAP_DIRECTIONAL_LIGHT].descriptorsBindingsIDs[0];
-		ShadowMapMatrixUBO *modelMatrixUBO = (ShadowMapMatrixUBO*)(GPUDescriptors[descriptorBindingsConfig[shadowMapDirectionalLightDescriptorBindingIndex].
-																				  globalDescriptorOffset].GPUBuffer->mapedDataPtr) + currentImage;
 
-		modelMatrixUBO->model            = actors[actor].modelMatrix;		
+	void CVulkanRenderer::destroyRenderFinishedSemaphores() {
+		for (VkSemaphore& semaphore : renderFinishedSemaphores) {
+			vkDestroySemaphore(device, semaphore, nullptr);
+		}
+		renderFinishedSemaphores.clear();
+	}
+
+	/// Uniform buffers are host coherent and stay mapped for the lifetime of the renderer.
+    void CVulkanRenderer::mapUniformBuffers() {
+		for ( unsigned int descriptorSetCounter = 0; descriptorSetCounter < DescriptorSetDataLink::DESCRIPTOR_CHUNKS_NUMBER; ++descriptorSetCounter ) {
+			for ( unsigned int j = 0; j < descriptorSetsConfig[descriptorSetCounter].actualLinkedDescriptorBindingsNumber; ++j ) {
+				const DescriptorBinding& binding = descriptorBindingsConfig[descriptorSetsConfig[descriptorSetCounter].descriptorsBindingsIDs[j]];
+				if ( binding.vkType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER )
+					continue;
+
+				GPUBuffer* uniformBuffer = GPUDescriptors[binding.globalDescriptorOffset].GPUBuffer;
+				if ( vkMapMemory(device, uniformBuffer->deviceMemory, 0, VK_WHOLE_SIZE, 0, &uniformBuffer->mapedDataPtr) != VK_SUCCESS ) {
+					throw std::runtime_error("failed to map uniform buffer memory!");
+				}
+			}
+		}
+	}
+
+	/// Number of joint matrices that fit into the uniform block, skins with more joints are truncated.
+	static uint32_t clampedJointMatricesNumber( const RenderActor& actor ) {
+		return std::min<uint32_t>(actor.jointMatrices.GetSize(), MAX_JOINTS_NUMBER);
+	}
+
+    void CVulkanRenderer::updateDirectionalLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, unsigned int actor) {
+		ShadowMapMatrixUBO *modelMatrixUBO = mappedUBO<ShadowMapMatrixUBO>(DescriptorSetDataLink::SHADOW_MAP_DIRECTIONAL_LIGHT, currentImage);
+
+		modelMatrixUBO->model            = actors[actor].modelMatrix;
 		modelMatrixUBO->lightSpaceMatrix = dirLightSpaceMatrix[currentLight];
 
-		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), actors[actor].jointMatrices.GetSize() * sizeof(mat4));
+		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), clampedJointMatricesNumber(actors[actor]) * sizeof(mat4));
     }
 
     void CVulkanRenderer::updateSpotLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, unsigned int actor) {
-		unsigned int shadowMapSpotLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::SHADOW_MAP_SPOT_LIGHT].descriptorsBindingsIDs[0];
-		ShadowMapMatrixUBO *modelMatrixUBO = (ShadowMapMatrixUBO*)(GPUDescriptors[descriptorBindingsConfig[shadowMapSpotLightDescriptorBindingIndex].
-																				  globalDescriptorOffset].GPUBuffer->mapedDataPtr) + currentImage;
-		
-		modelMatrixUBO->model            = actors[actor].modelMatrix;		
+		ShadowMapMatrixUBO *modelMatrixUBO = mappedUBO<ShadowMapMatrixUBO>(DescriptorSetDataLink::SHADOW_MAP_SPOT_LIGHT, currentImage);
+
+		modelMatrixUBO->model            = actors[actor].modelMatrix;
 		modelMatrixUBO->lightSpaceMatrix = spotLightSpaceMatrix[currentLight];
 
-		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), actors[actor].jointMatrices.GetSize() * sizeof(mat4));
+		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), clampedJointMatricesNumber(actors[actor]) * sizeof(mat4));
     }
 
     void CVulkanRenderer::updatePointLightShadowMapMatrixUBO([[maybe_unused]] uint32_t currentImage, uint32_t currentLight, uint32_t layer, unsigned int actor) {
-        unsigned int shadowMapPointLightDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::SHADOW_MAP_POINT_LIGHT].descriptorsBindingsIDs[0];
-        PointLightShadowMapMatrixUBO *modelMatrixUBO = (PointLightShadowMapMatrixUBO
-														 *)(GPUDescriptors[descriptorBindingsConfig[shadowMapPointLightDescriptorBindingIndex].
-																		   globalDescriptorOffset].GPUBuffer->mapedDataPtr) + currentImage;
+        PointLightShadowMapMatrixUBO *modelMatrixUBO = mappedUBO<PointLightShadowMapMatrixUBO>(DescriptorSetDataLink::SHADOW_MAP_POINT_LIGHT, currentImage);
 
 		modelMatrixUBO->model = actors[actor].modelMatrix;
 		
@@ -3084,18 +3050,17 @@ namespace GLVM::core
 		modelMatrixUBO->farPlane         = 100.0f;
 		modelMatrixUBO->lightPosition    = pointLights[currentLight].position;
 
-		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), actors[actor].jointMatrices.GetSize() * sizeof(mat4));
+		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), clampedJointMatricesNumber(actors[actor]) * sizeof(mat4));
     }
 
     void CVulkanRenderer::updateMatrixUniformBuffer(uint32_t offset, unsigned int actor) {
-        unsigned int mainRenderDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_MATRIX_UBO].descriptorsBindingsIDs[0];
-		ModelMatrixUBO* modelMatrixUBO = (ModelMatrixUBO*)(GPUDescriptors[descriptorBindingsConfig[mainRenderDescriptorBindingIndex].globalDescriptorOffset].GPUBuffer->mapedDataPtr) + offset;
-		
-		modelMatrixUBO->model = actors[actor].modelMatrix;		
+		ModelMatrixUBO* modelMatrixUBO = mappedUBO<ModelMatrixUBO>(DescriptorSetDataLink::MAIN_RENDER_MATRIX_UBO, offset);
+
+		modelMatrixUBO->model = actors[actor].modelMatrix;
         modelMatrixUBO->view  = viewMatrix;
         modelMatrixUBO->proj  = projectionMatrix;
 
-		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), actors[actor].jointMatrices.GetSize() * sizeof(mat4));
+		memcpy(modelMatrixUBO->jointMatrices, actors[actor].jointMatrices.GetVectorContainer(), clampedJointMatricesNumber(actors[actor]) * sizeof(mat4));
 		memcpy(modelMatrixUBO->dirSpaceMatrix, dirLightSpaceMatrix, DIRECTIONAL_LIGHTS_NUMBER * sizeof(mat4));
 		memcpy(modelMatrixUBO->spotSpaceMatrix, spotLightSpaceMatrix, SPOT_LIGHTS_NUMBER * sizeof(mat4));
 		
@@ -3106,13 +3071,10 @@ namespace GLVM::core
     }
 
 	void CVulkanRenderer::updateViewPositionUniformBuffer( uint32_t currentImage, uint32_t player ) {
-		unsigned int lightDataUboDescriptorBindingIndex = descriptorSetsConfig[DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO].descriptorsBindingsIDs[0];
-		LightData* lightDataUBO = (LightData*)(GPUDescriptors[descriptorBindingsConfig[lightDataUboDescriptorBindingIndex].globalDescriptorOffset].
-												GPUBuffer->mapedDataPtr) + currentImage;
+		LightData* lightDataUBO = mappedUBO<LightData>(DescriptorSetDataLink::MAIN_RENDER_LIGHT_DATA_UBO, currentImage);
 
+		/// Light numbers are set (and clamped to the array sizes) at the start of mainRenderDrawFrame.
 		lightDataUBO->viewPosition = players[player].position;
-		directionalLightNumber = directionalLights.GetSize();
-		assert(directionalLightNumber <= 4 && "Directional lights number greater then 4");
 		for ( unsigned int i = 0; i < directionalLightNumber; ++i ) {
 			lightDataUBO->directionalLights[i].position  = directionalLights[i].position;
 			lightDataUBO->directionalLights[i].direction = directionalLights[i].direction;
@@ -3122,8 +3084,6 @@ namespace GLVM::core
 		}
 		lightDataUBO->directionalLightsArraySize = directionalLightNumber;
 
-		pointLightNumber = pointLights.GetSize();
-		assert(pointLightNumber <= POINT_LIGHTS_NUMBER && "Point lights number greater than 32");
 		for ( unsigned int i = 0; i < pointLightNumber; ++i ) {
  			lightDataUBO->pointLights[i].position  = pointLights[i].position;
 			lightDataUBO->pointLights[i].ambient   = pointLights[i].ambient;
@@ -3136,8 +3096,6 @@ namespace GLVM::core
 		lightDataUBO->pointLightsArraySize = pointLightNumber;
 		lightDataUBO->farPlane = 100.0f;
 
-		spotLightNumber = spotLights.GetSize();
-		assert(spotLightNumber <= 8 && "Spot light number greater then 8");
 		for ( unsigned int i = 0; i < spotLightNumber; ++i ) {
 			lightDataUBO->spotLights[i].position    = spotLights[i].position;
 			lightDataUBO->spotLights[i].direction   = spotLights[i].direction;
@@ -3152,11 +3110,12 @@ namespace GLVM::core
 		}
 		lightDataUBO->spotLightArraySize = spotLightNumber;
 
+		if( print == true ) {
+		/// The indirect texture is generated once, the random generator is only needed here.
 		std::random_device rd;
 		std::mt19937 mersenne(rd());
 		std::uniform_int_distribution<int> distributionTileIndex(0, INDIRECT_TEXTURE_HEIGHT * INDIRECT_TEXTURE_WIDTH);
 
-		if( print == true ) {
 		for( int i = 0; i < INDIRECT_TEXTURE_HEIGHT * INDIRECT_TEXTURE_WIDTH / 4 + 1; ++i )
 			for( int j = 0; j < 4; ++j ) {
 				int randomTileIndex = distributionTileIndex(mersenne);
@@ -3184,6 +3143,24 @@ namespace GLVM::core
     void CVulkanRenderer::mainRenderDrawFrame() {
 		namespace cm = GLVM::ecs::components;
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+
+		/// Without a fixed surface extent (Wayland) the window size change is not reported by the swapchain.
+		if ( swapChainExtentFollowsWindow && Window->width != 0 && Window->height != 0 &&
+			 ( static_cast<uint32_t>(Window->width) != swapChainWindowSize.width || static_cast<uint32_t>(Window->height) != swapChainWindowSize.height ) ) {
+			framebufferResized = true;
+		}
+		if ( framebufferResized || swapChainRecreatePending ) {
+			framebufferResized = false;
+			recreateSwapChain();
+			if ( swapChainRecreatePending )
+				return;                                      ///< Zero sized window, nothing to render into
+		}
+
+		/// Light numbers are clamped to the sizes of the shadow map and light arrays, extra lights are ignored.
+		directionalLightNumber = std::min<unsigned int>(directionalLights.GetSize(), DIRECTIONAL_LIGHTS_NUMBER);
+		spotLightNumber        = std::min<unsigned int>(spotLights.GetSize(), SPOT_LIGHTS_NUMBER);
+		pointLightNumber       = std::min<unsigned int>(pointLights.GetSize(), POINT_LIGHTS_NUMBER);
+		ensureShadowMaps();
 
         uint32_t imageIndex;
 		/* vkAcquireNextImageKHR give index of image that WILL BE SOON available for rendering and signal imageAvailablesemaphore when its so.
@@ -3216,33 +3193,31 @@ namespace GLVM::core
 			pointLightRecordCommandBuffer(pointLightSecondaryCommandBuffers, this->currentFrame);
 		});
     
-		future1.wait();
-		future2.wait();
-		future3.wait();
-		
+		/// get() rethrows exceptions of the recording threads.
+		future1.get();
+		future2.get();
+		future3.get();
+
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
         if (vkBeginCommandBuffer(mainRenderCommandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
             throw std::runtime_error("failed to begin recording command buffer!");
         }
-		for ( uint32_t directionalLightCounter = 0; directionalLightCounter < directionalLights.GetSize(); ++ directionalLightCounter ) {
+		const VkExtent2D shadowMapExtent = { SHADOW_MAP_SIZE, SHADOW_MAP_SIZE };
+		for ( uint32_t directionalLightCounter = 0; directionalLightCounter < directionalLightNumber; ++ directionalLightCounter ) {
 			executeSecondaryCommandBuffer( renderPasses[SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE], directionalLightShadowMapFrameBuffers[directionalLightCounter],
-										   swapChainExtent, mainRenderCommandBuffers[currentFrame], directionalLightSecondaryCommandBuffers[currentFrame * directionalLightNumber + directionalLightCounter] );
-		}		
-		for ( uint32_t spotLightCounter = 0; spotLightCounter < spotLights.GetSize(); ++ spotLightCounter ) {
-			executeSecondaryCommandBuffer( renderPasses[SpecificPipeline::SPOT_LIGHT_PIPELINE], spotLightShadowMapFrameBuffers[spotLightCounter],
-										   swapChainExtent, mainRenderCommandBuffers[currentFrame], spotLightSecondaryCommandBuffers[currentFrame * spotLightNumber + spotLightCounter] );
+										   shadowMapExtent, mainRenderCommandBuffers[currentFrame], directionalLightSecondaryCommandBuffers[currentFrame * DIRECTIONAL_LIGHTS_NUMBER + directionalLightCounter] );
 		}
-		for ( uint32_t pointLightCounter = 0; pointLightCounter < pointLights.GetSize(); ++pointLightCounter ) {
-			uint32_t maxCubeMapLayers = 6;
-			for ( uint32_t cubeMapLayerCounter = 0; cubeMapLayerCounter < maxCubeMapLayers; ++cubeMapLayerCounter ) {
-				VkExtent2D extent;
-				extent.width  = SHADOW_MAP_SIZE;
-				extent.height = SHADOW_MAP_SIZE;
+		for ( uint32_t spotLightCounter = 0; spotLightCounter < spotLightNumber; ++ spotLightCounter ) {
+			executeSecondaryCommandBuffer( renderPasses[SpecificPipeline::SPOT_LIGHT_PIPELINE], spotLightShadowMapFrameBuffers[spotLightCounter],
+										   shadowMapExtent, mainRenderCommandBuffers[currentFrame], spotLightSecondaryCommandBuffers[currentFrame * SPOT_LIGHTS_NUMBER + spotLightCounter] );
+		}
+		for ( uint32_t pointLightCounter = 0; pointLightCounter < pointLightNumber; ++pointLightCounter ) {
+			for ( uint32_t cubeMapLayerCounter = 0; cubeMapLayerCounter < CUBE_MAP_LAYER_NUMBER; ++cubeMapLayerCounter ) {
 				executeSecondaryCommandBuffer( renderPasses[SpecificPipeline::POINT_LIGHT_PIPELINE], pointLightShadowMapFrameBuffers[pointLightCounter][cubeMapLayerCounter],
-											   extent, mainRenderCommandBuffers[currentFrame], pointLightSecondaryCommandBuffers[currentFrame * pointLightNumber * maxCubeMapLayers +
-																																		  pointLightCounter * maxCubeMapLayers + cubeMapLayerCounter] );
+											   shadowMapExtent, mainRenderCommandBuffers[currentFrame],
+											   pointLightSecondaryCommandBuffers[(currentFrame * POINT_LIGHTS_NUMBER + pointLightCounter) * CUBE_MAP_LAYER_NUMBER + cubeMapLayerCounter] );
 			}
 		}
 		
@@ -3263,6 +3238,10 @@ namespace GLVM::core
 //		sdfRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
 
 //		spacialGridDebugRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
+
+        if (vkEndCommandBuffer(mainRenderCommandBuffers[currentFrame]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to record command buffer!");
+        }
 
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -3380,20 +3359,21 @@ namespace GLVM::core
     }
 	
 		void CVulkanRenderer::directionalLightRecordCoomandBuffer(std::vector<VkCommandBuffer>& commandBuffers, [[maybe_unused]] uint32_t currentFrame) {
-		for ( uint32_t directionalLightCounter = 0; directionalLightCounter < directionalLights.GetSize(); ++ directionalLightCounter ) {
+		const u32 perFrameUboNumber = perFrameDescriptorNumber(DescriptorSetDataLink::SHADOW_MAP_DIRECTIONAL_LIGHT);
+		for ( uint32_t directionalLightCounter = 0; directionalLightCounter < directionalLightNumber; ++ directionalLightCounter ) {
 			VkCommandBufferInheritanceInfo inheritanceInfo{};
 			inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
 			inheritanceInfo.renderPass = renderPasses[SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE];
 			inheritanceInfo.framebuffer = directionalLightShadowMapFrameBuffers[directionalLightCounter];
 			inheritanceInfo.subpass = 0;
-			
+
 			VkCommandBufferBeginInfo beginInfo{};
 			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT |
 				VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 			beginInfo.pInheritanceInfo = &inheritanceInfo;
 
-			VkCommandBuffer commandBuffer = commandBuffers[currentFrame * directionalLightNumber + directionalLightCounter];
+			VkCommandBuffer commandBuffer = commandBuffers[currentFrame * DIRECTIONAL_LIGHTS_NUMBER + directionalLightCounter];
 			if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
 				throw std::runtime_error("failed to begin recording command buffer!");
 			}
@@ -3417,8 +3397,8 @@ namespace GLVM::core
 			// vkCmdBeginRenderPass(commandBuffer, &shadowMapRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 			VkViewport shadowMapViewPort;
-			shadowMapViewPort.height = swapChainExtent.height;
-			shadowMapViewPort.width = swapChainExtent.width;
+			shadowMapViewPort.height = SHADOW_MAP_SIZE;
+			shadowMapViewPort.width = SHADOW_MAP_SIZE;
 			shadowMapViewPort.minDepth = 0.0f;
 			shadowMapViewPort.maxDepth = 1.0f;
 			shadowMapViewPort.x = 0;
@@ -3426,8 +3406,8 @@ namespace GLVM::core
 			vkCmdSetViewport(commandBuffer, 0, 1, &shadowMapViewPort);
 
 			VkRect2D shadowMapScissor;
-			shadowMapScissor.extent.width = swapChainExtent.width;
-			shadowMapScissor.extent.height = swapChainExtent.height;
+			shadowMapScissor.extent.width = SHADOW_MAP_SIZE;
+			shadowMapScissor.extent.height = SHADOW_MAP_SIZE;
 			shadowMapScissor.offset.x = 0;
 			shadowMapScissor.offset.y = 0;
 			vkCmdSetScissor(commandBuffer, 0, 1, &shadowMapScissor);
@@ -3437,11 +3417,16 @@ namespace GLVM::core
 			
 			uint32_t actorsNumber = actors.GetSize();
 			for ( unsigned int actorCounter = 0; actorCounter < actorsNumber; ++actorCounter ) {
-				RenderActor actor = actors[actorCounter];
+				const RenderActor& actor = actors[actorCounter];
 				unsigned int meshId = actor.meshID;
 
-				unsigned int uboDirectionalLightIndex = directionalLightNumber * actorsNumber * directionalLightCurrentFrame +
-					actorsNumber * directionalLightCounter + actorCounter;
+				/// Slots [currentFrame * perFrameUboNumber, (currentFrame + 1) * perFrameUboNumber) belong to this frame in flight.
+				const u32 localUboIndex = actorsNumber * directionalLightCounter + actorCounter;
+				if ( localUboIndex >= perFrameUboNumber ) {
+					reportUboOverflow(SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE);
+					break;
+				}
+				unsigned int uboDirectionalLightIndex = perFrameUboNumber * currentFrame + localUboIndex;
 
 				updateDirectionalLightShadowMapMatrixUBO(uboDirectionalLightIndex, directionalLightCounter, actorCounter);
 				const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::DIRECTIONAL_LIGHT_PIPELINE].linkedDescriptorSetIDs[0];
@@ -3467,7 +3452,8 @@ namespace GLVM::core
 	}
 
 		void CVulkanRenderer::spotLightRecordCommandBuffer(std::vector<VkCommandBuffer>& commandBuffers, [[maybe_unused]] uint32_t currentFrame) {
-		for ( uint32_t spotLightCounter = 0; spotLightCounter < spotLights.GetSize(); ++ spotLightCounter ) {
+		const u32 perFrameUboNumber = perFrameDescriptorNumber(DescriptorSetDataLink::SHADOW_MAP_SPOT_LIGHT);
+		for ( uint32_t spotLightCounter = 0; spotLightCounter < spotLightNumber; ++ spotLightCounter ) {
 			VkCommandBufferInheritanceInfo inheritanceInfo{};
 			inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
 			inheritanceInfo.renderPass = renderPasses[SpecificPipeline::SPOT_LIGHT_PIPELINE];
@@ -3480,7 +3466,7 @@ namespace GLVM::core
 				VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 			beginInfo.pInheritanceInfo = &inheritanceInfo;
 
-			VkCommandBuffer commandBuffer = commandBuffers[currentFrame * spotLightNumber + spotLightCounter];
+			VkCommandBuffer commandBuffer = commandBuffers[currentFrame * SPOT_LIGHTS_NUMBER + spotLightCounter];
 			if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
 				throw std::runtime_error("failed to begin recording command buffer!");
 			}
@@ -3504,8 +3490,8 @@ namespace GLVM::core
 			// vkCmdBeginRenderPass(commandBuffer, &spotLightShadowMapRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 			VkViewport spotLightShadowMapViewPort;
-			spotLightShadowMapViewPort.height = swapChainExtent.height;
-			spotLightShadowMapViewPort.width = swapChainExtent.width;
+			spotLightShadowMapViewPort.height = SHADOW_MAP_SIZE;
+			spotLightShadowMapViewPort.width = SHADOW_MAP_SIZE;
 			spotLightShadowMapViewPort.minDepth = 0.0f;
 			spotLightShadowMapViewPort.maxDepth = 1.0f;
 			spotLightShadowMapViewPort.x = 0;
@@ -3513,8 +3499,8 @@ namespace GLVM::core
 			vkCmdSetViewport(commandBuffer, 0, 1, &spotLightShadowMapViewPort);
 
 			VkRect2D spotLightShadowMapScissor;
-			spotLightShadowMapScissor.extent.width = swapChainExtent.width;
-			spotLightShadowMapScissor.extent.height = swapChainExtent.height;
+			spotLightShadowMapScissor.extent.width = SHADOW_MAP_SIZE;
+			spotLightShadowMapScissor.extent.height = SHADOW_MAP_SIZE;
 			spotLightShadowMapScissor.offset.x = 0;
 			spotLightShadowMapScissor.offset.y = 0;
 			vkCmdSetScissor(commandBuffer, 0, 1, &spotLightShadowMapScissor);
@@ -3524,10 +3510,15 @@ namespace GLVM::core
 			spotLightSpaceMatrix[spotLightCounter] = spotLights[spotLightCounter].SpotLigthSpaceMatrix; 
 			uint32_t actorsNumber = actors.GetSize();
 			for ( unsigned int actorsCounter = 0; actorsCounter < actorsNumber; ++actorsCounter ) {
-				RenderActor actor = actors[actorsCounter];
+				const RenderActor& actor = actors[actorsCounter];
 				unsigned int meshID = actor.meshID;
-				unsigned int uboSpotLightIndex = spotLightNumber * actorsNumber * spotLightCurrentFrame +
-					actorsNumber * spotLightCounter + actorsCounter;
+				/// Slots [currentFrame * perFrameUboNumber, (currentFrame + 1) * perFrameUboNumber) belong to this frame in flight.
+				const u32 localUboIndex = actorsNumber * spotLightCounter + actorsCounter;
+				if ( localUboIndex >= perFrameUboNumber ) {
+					reportUboOverflow(SpecificPipeline::SPOT_LIGHT_PIPELINE);
+					break;
+				}
+				unsigned int uboSpotLightIndex = perFrameUboNumber * currentFrame + localUboIndex;
 
 				updateSpotLightShadowMapMatrixUBO(uboSpotLightIndex, spotLightCounter, actorsCounter);
 				const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::SPOT_LIGHT_PIPELINE].linkedDescriptorSetIDs[0];
@@ -3589,8 +3580,9 @@ namespace GLVM::core
 		// label.pNext = NULL;
 		
 		// vkDebugUtils::CreateBeginDebugUtilsLabelEXT(instance, commandBuffers[0], &label);
-		for ( uint32_t pointLightCounter = 0; pointLightCounter < pointLights.GetSize(); ++pointLightCounter ) {
-			uint32_t maxCubeMapLayers = 6;
+		const u32 perFrameUboNumber = perFrameDescriptorNumber(DescriptorSetDataLink::SHADOW_MAP_POINT_LIGHT);
+		for ( uint32_t pointLightCounter = 0; pointLightCounter < pointLightNumber; ++pointLightCounter ) {
+			uint32_t maxCubeMapLayers = CUBE_MAP_LAYER_NUMBER;
 			for ( uint32_t cubeMapLayerCounter = 0; cubeMapLayerCounter < maxCubeMapLayers; ++cubeMapLayerCounter ) {                      ///< 6 is a number of cube map layers.
 				VkCommandBufferInheritanceInfo inheritanceInfo{};
 				inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
@@ -3604,8 +3596,7 @@ namespace GLVM::core
 					VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
 				beginInfo.pInheritanceInfo = &inheritanceInfo;
 
-				VkCommandBuffer commandBuffer = commandBuffers[currentFrame * pointLightNumber * maxCubeMapLayers +
-					pointLightCounter * maxCubeMapLayers + cubeMapLayerCounter];
+				VkCommandBuffer commandBuffer = commandBuffers[(currentFrame * POINT_LIGHTS_NUMBER + pointLightCounter) * maxCubeMapLayers + cubeMapLayerCounter];
 				if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
 					throw std::runtime_error("failed to begin recording command buffer!");
 				}
@@ -3652,13 +3643,17 @@ namespace GLVM::core
 				uint32_t actorsNumber = actors.GetSize();
 				for ( unsigned int actorCounter = 0; actorCounter < actorsNumber; ++actorCounter ) {
 //					unsigned int meshOwnerEntity = entitiesCollectionLinked__Trn_Mat_Mes_Act[actorCounter];
-					RenderActor actor = actors[actorCounter];
+					const RenderActor& actor = actors[actorCounter];
 					unsigned int meshID = actor.meshID;
-						
-					unsigned int uboIndex = pointLightNumber *
-						actorsNumber * maxCubeMapLayers * pointLightCurrentFrame +                           ///< Choose frame (first 168 or second 168)
+
+					const u32 localUboIndex =
 						actorsNumber * maxCubeMapLayers * pointLightCounter +                      ///< Choose point light (i)
 						maxCubeMapLayers * actorCounter + cubeMapLayerCounter;                     ///< Choose actor (m) and layer (j)
+					if ( localUboIndex >= perFrameUboNumber ) {
+						reportUboOverflow(SpecificPipeline::POINT_LIGHT_PIPELINE);
+						break;
+					}
+					unsigned int uboIndex = perFrameUboNumber * currentFrame + localUboIndex;      ///< Choose frame
 
 					updatePointLightShadowMapMatrixUBO(uboIndex, pointLightCounter, cubeMapLayerCounter, actorCounter);
 					const unsigned int linkedDescriptorSetID = pipelineConfigs[SpecificPipeline::POINT_LIGHT_PIPELINE].linkedDescriptorSetIDs[0];
@@ -3710,7 +3705,7 @@ namespace GLVM::core
 
     VkPresentModeKHR CVulkanRenderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
         for (const auto& availablePresentMode : availablePresentModes) {
-            if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR || availablePresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
 //			if (availablePresentMode == VK_PRESENT_MODE_FIFO_KHR) {
 //				std::cout << "present mode found!" << std::endl;
                 return availablePresentMode;
@@ -3729,6 +3724,13 @@ namespace GLVM::core
 				.width  = Window->width,
 				.height = Window->height
 			};
+			/// A configure event may leave one dimension unset, keep the current size for it.
+			if ( actualExtent.width == 0 )
+				actualExtent.width = swapChainExtent.width;
+			if ( actualExtent.height == 0 )
+				actualExtent.height = swapChainExtent.height;
+			if ( actualExtent.width == 0 || actualExtent.height == 0 )
+				return actualExtent;
             actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
             actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
 
@@ -3774,7 +3776,8 @@ namespace GLVM::core
         VkPhysicalDeviceFeatures supportedFeatures;
         vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
 
-        return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy && supportedFeatures.fillModeNonSolid;
+        return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy && supportedFeatures.fillModeNonSolid &&
+			supportedFeatures.shaderSampledImageArrayDynamicIndexing;
     }
 
     bool CVulkanRenderer::checkDeviceExtensionSupport(VkPhysicalDevice device) {

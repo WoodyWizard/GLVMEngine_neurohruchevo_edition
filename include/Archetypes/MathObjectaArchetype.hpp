@@ -52,6 +52,7 @@ constexpr uint32_t MATH_OBJECT_ARCH_CHUNK_SIZE =
 			componentIds[4] = ComponentsIndices::MESH_GENERATION_COMPONENT;
 			componentIds[5] = ComponentsIndices::MATH_OBJECT_COMPONENT;
 			componentCount = 6;
+			static_assert( MATH_OBJECT_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 }; // namespace GLVM::ecs::arch

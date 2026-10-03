@@ -31,8 +31,11 @@ namespace GLVM::ecs
 		unsigned int row = inventoryComponent->row;
 		unsigned int col = inventoryComponent->col;
 
-		arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( itemEntity )];
+		const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( itemEntity )];
 		arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
+		if ( itemArch == nullptr )
+			return false;
+
 		const uint32_t itemIndex = itemLocation.index;
 		cm::item* itemComponent = &itemArch->items[itemIndex];
 
@@ -41,6 +44,8 @@ namespace GLVM::ecs
 
 		std::cout << "item width: " << item_width << std::endl;
 		std::cout << "item height: " << item_height << std::endl;
+		if ( item_width == 0 || item_height == 0 || item_width > col || item_height > row )
+			return false;
 		for ( unsigned int i = 0; i < row - item_height + 1; ++i )
 			for ( unsigned int j = 0; j < col - item_width + 1; ++j ) {
 				core::vector<unsigned int> maybeAvailabeSlots;
@@ -64,7 +69,7 @@ namespace GLVM::ecs
 //				std::cout << "all slots: " << isAllSlotsAvailable << std::endl;
 				if ( maybeAvailabeSlots.GetSize() == isAllSlotsAvailable ) {
 					for ( unsigned int w = 0; w < maybeAvailabeSlots.GetSize(); ++w ) {
-						unsigned int row_index = indicesOfMaybeAvailableSlots[w] / row;
+						unsigned int row_index = indicesOfMaybeAvailableSlots[w] / col;     ///< Slot index is row * col + column
 						unsigned int col_index = indicesOfMaybeAvailableSlots[w] % col;
 						inventoryComponent->slots[row_index][col_index] = itemEntity;
 						itemComponent->occupiedSlots.Push(indicesOfMaybeAvailableSlots[w]);
@@ -82,13 +87,16 @@ namespace GLVM::ecs
 		namespace cm = GLVM::ecs::components;
 
 		if (!isInventoryOpened) {
+			/// Only one archetype of every kind is cached (capacity of each cache is 1)
 			inventoryArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( inventoryRequiredMask, &archView.inventoryCachedArchetype, inventoryArchetypesNumber );
+			arch::world.searchCacheArchetypes( inventoryRequiredMask, &archView.inventoryCachedArchetype, inventoryArchetypesNumber, 1 );
+			itemArchetypesNumber = 0;
+			arch::world.searchCacheArchetypes( itemRequiredMask, &archView.itemArchetype, itemArchetypesNumber, 1 );
+			if ( inventoryArchetypesNumber == 0 || itemArchetypesNumber == 0 )
+				return;
+
 			componentsView.inventoriesView = (ecs::components::inventory*)archView.inventoryCachedArchetype->
 				components[arch::ComponentsIndices::INVENTORY_COMPONENT];
-
-			itemArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( itemRequiredMask, &archView.itemArchetype, itemArchetypesNumber );
 			componentsView.itemsView         = (ecs::components::item*)archView.itemArchetype->
 				components[arch::ComponentsIndices::ITEM_COMPONENT];
 			componentsView.itemCollidersView = (ecs::components::collider*)archView.itemArchetype->
@@ -120,12 +128,14 @@ namespace GLVM::ecs
 
 		if(isInventoryOpened) {
 			crosshairArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( crosshairRequiredMask, &archView.crosshairArchetype, crosshairArchetypesNumber );
+			arch::world.searchCacheArchetypes( crosshairRequiredMask, &archView.crosshairArchetype, crosshairArchetypesNumber, 1 );
+			itemArchetypesNumber = 0;
+			arch::world.searchCacheArchetypes( itemRequiredMask, &archView.itemArchetype, itemArchetypesNumber, 1 );
+			if ( crosshairArchetypesNumber == 0 || itemArchetypesNumber == 0 || archView.crosshairArchetype->entityCount == 0 )
+				return;
+
 			componentsView.crosshairTransforms = (ecs::components::transform*)archView.crosshairArchetype->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
-
-			itemArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( itemRequiredMask, &archView.itemArchetype, itemArchetypesNumber );
 			componentsView.itemTransformsView = (ecs::components::transform*)archView.itemArchetype->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
 

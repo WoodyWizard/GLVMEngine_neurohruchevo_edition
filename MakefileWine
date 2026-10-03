@@ -1,35 +1,49 @@
-CXX = x86_64-w64-mingw32-c++
-CC = x86_64-w64-mingw32-gcc
-VULKAN_SDK = /home/Yuriorkis_Scream/.wine/drive_c/VulkanSDK/1.3.275.0
-LDFLAGS = -I$(VULKAN_SDK)/Include -L$(VULKAN_SDK)/Lib -lgdi32 -lopengl32 -lwinmm -lvulkan-1 -static-libgcc -static-libstdc++ -static -mconsole
-CXXFLAGS = -c -std=c++20 -g -Wall -I$(VULKAN_SDK)/Include -O0 -mconsole
-CFLAGS = -c -g -Wall
-INC = -I./include
-TEX = -I./textures
-BUILD = build
-SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
-	./src/ShaderProgram.cpp ./src/Event.cpp ./src/WinApi/ChronoWin.cpp ./src/TimerCreator.cpp \
-	./src/Systems/CollisionSystem.cpp ./src/Systems/AnimationSystem.cpp ./src/Systems/GUISystem.cpp \
-	./src/Systems/PhysicsSystem.cpp ./src/ComponentManager.cpp ./src/EntityManager.cpp ./src/Systems/MovementSystem.cpp \
-	./src/SystemManager.cpp ./src/Systems/ProjectileSystem.cpp ./src/Systems/CameraSystem.cpp \
-	./src/WinApi/SoundEngineWaveform.cpp ./src/SoundEngineFactory.cpp ./src/GraphicAPI/Opengl.cpp ./src/GraphicAPI/Vulkan.cpp ./src/TextureManager.cpp \
-	./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
-	./src/WinApi/WindowWinVulkan.cpp ./src/WinApi/WindowWinOpengl.cpp ./textures/glvm.cpp ./textures/sample1.cpp ./textures/sample2.cpp 
-OBJECTS = $(SOURCES:./src/%.cpp=$(BUILD)/%.o)
-EXECUTABLE = winGame
+# GLVM Windows build for running under Wine, cross-compiled on Linux with llvm-mingw
+# (https://github.com/mstorsjo/llvm-mingw). Vulkan headers come from ./Vulkan-Headers,
+# the import library from Wine (libvulkan-1.a).
+#
+#   make -f MakefileWine LLVM_MINGW=/path/to/llvm-mingw -j$(nproc)     # -> build/winGame.exe
+#   cd build && wine winGame.exe
+#
+# Optional overrides: WINE_VULKAN_LIB=/path/to/libvulkan-1.a, VULKAN_HEADERS=/path/to/Include
 
-all:$(SOURCES) $(EXECUTABLE)
+LLVM_MINGW     ?=
+CXX             = $(if $(LLVM_MINGW),$(LLVM_MINGW)/bin/)x86_64-w64-mingw32-clang++
+VULKAN_HEADERS ?= ./Vulkan-Headers/Include
+WINE_VULKAN_LIB ?= $(firstword $(wildcard /usr/lib64/wine/x86_64-windows/libvulkan-1.a \
+	/usr/lib/wine/x86_64-windows/libvulkan-1.a /usr/lib/x86_64-linux-gnu/wine/x86_64-windows/libvulkan-1.a \
+	/usr/lib/wine-vanilla-*/wine/x86_64-windows/libvulkan-1.a /opt/wine-*/lib/wine/x86_64-windows/libvulkan-1.a))
 
-$(EXECUTABLE): $(OBJECTS)
-	$(CXX) $(OBJECTS) $(LDFLAGS) -o $(BUILD)/$@
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(strip $(WINE_VULKAN_LIB)),)
+$(error Wine libvulkan-1.a not found: pass WINE_VULKAN_LIB=<path to libvulkan-1.a from the Wine package>)
+endif
+endif
 
-$(BUILD)/%.o : ./src/%.cpp
-	mkdir -p $(@D)
-	$(CXX) $(INC) $(TEX) $(CXXFLAGS) $< -o $@
+BUILD    = build
+OBJ_DIR  = $(BUILD)/obj-wine
+CPPFLAGS = -I./include -I./textures -I$(VULKAN_HEADERS) -MMD -MP
+CXXFLAGS = -std=c++20 -O2 -g -Wall -Wextra
+LDLIBS   = $(WINE_VULKAN_LIB) -lgdi32 -luser32 -lwinmm
 
-$(BUILD)/%.o : %.c
-	$(CC) $(INC) $(TEX) $(CFLAGS) $< -o $@
+include make_files/sources.mk
+
+SOURCES = $(GLVM_COMMON_SOURCES) $(GLVM_WINDOWS_SOURCES) $(GLVM_TEXTURE_SOURCES)
+OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
+TARGET  = $(BUILD)/winGame.exe
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CXX) $(OBJECTS) $(LDLIBS) -o $@
+
+$(OBJ_DIR)/%.o: ./%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD)/*
+	rm -rf $(OBJ_DIR) $(TARGET)
 
+-include $(OBJECTS:.o=.d)

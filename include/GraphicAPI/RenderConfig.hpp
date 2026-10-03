@@ -14,8 +14,10 @@ namespace GLVM::core
 	inline DescriptorBinding descriptorBindingsConfig[descriptorBindingsConfigMaxNumber];
 	inline Pipeline pipelineConfigs[32];
 	inline RenderPass renderPassConfigs[32];
-	constexpr uint32_t MAX_TEXTURES = 18;
-	
+	constexpr int      MAX_FRAMES_IN_FLIGHT = 2;
+	constexpr uint32_t MAX_TEXTURES = 18;                                                       ///< Maximum number of loaded textures
+	constexpr uint32_t TEXTURE_DESCRIPTOR_SETS_NUMBER = MAX_TEXTURES * MAX_FRAMES_IN_FLIGHT;    ///< One texture descriptor set per texture per frame in flight
+
 	inline void VkConfigInitializer() {
 		/*
 		=====================================================================================
@@ -26,7 +28,7 @@ namespace GLVM::core
 		*/
 		
 		descriptorSetsConfig[SHADOW_MAP_DIRECTIONAL_LIGHT].actualLinkedDescriptorBindingsNumber = 1;
-		descriptorSetsConfig[SHADOW_MAP_DIRECTIONAL_LIGHT].hostDescriptorNumber                 = 128;
+		descriptorSetsConfig[SHADOW_MAP_DIRECTIONAL_LIGHT].hostDescriptorNumber                 = 1024;
 		descriptorSetsConfig[SHADOW_MAP_DIRECTIONAL_LIGHT].isTexture                            = false;
 
 		descriptorBindingsConfig[0].vkType                  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -63,7 +65,7 @@ namespace GLVM::core
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 		
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
@@ -71,12 +73,12 @@ namespace GLVM::core
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
-		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[DIRECTIONAL_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 
 		/// ===================================================================================== ///
 
 		descriptorSetsConfig[SHADOW_MAP_SPOT_LIGHT].actualLinkedDescriptorBindingsNumber        = 1;
-		descriptorSetsConfig[SHADOW_MAP_SPOT_LIGHT].hostDescriptorNumber                        = 256;
+		descriptorSetsConfig[SHADOW_MAP_SPOT_LIGHT].hostDescriptorNumber                        = 1024;
 		descriptorSetsConfig[SHADOW_MAP_SPOT_LIGHT].isTexture                                   = false;
 
 		descriptorBindingsConfig[1].vkType                  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -111,7 +113,7 @@ namespace GLVM::core
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 		
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
@@ -119,12 +121,12 @@ namespace GLVM::core
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
-		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[SPOT_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 		
 		/// ===================================================================================== ///
 
 		descriptorSetsConfig[SHADOW_MAP_POINT_LIGHT].actualLinkedDescriptorBindingsNumber       = 1;
-		descriptorSetsConfig[SHADOW_MAP_POINT_LIGHT].hostDescriptorNumber                       = 512;
+		descriptorSetsConfig[SHADOW_MAP_POINT_LIGHT].hostDescriptorNumber                       = 2048;
 		descriptorSetsConfig[SHADOW_MAP_POINT_LIGHT].isTexture                                  = false;
 
 		descriptorBindingsConfig[2].vkType                  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -160,7 +162,7 @@ namespace GLVM::core
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_SHADER_READ_BIT;
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[0].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 		
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
@@ -168,7 +170,7 @@ namespace GLVM::core
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_SHADER_READ_BIT;
-		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = VK_DEPENDENCY_BY_REGION_BIT;
+		renderPassConfigs[POINT_LIGHT_PIPELINE].subpassDependencies[1].dependencyFlags   = {};          ///< Framebuffer-global: the main pass samples arbitrary shadow map texels
 
 		/// ===================================================================================== ///
 
@@ -214,14 +216,22 @@ namespace GLVM::core
 		renderPassConfigs[HUD_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[HUD_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[HUD_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[HUD_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 		
 		/// ===================================================================================== ///
 
@@ -236,7 +246,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[4].uboChunkSize            = sizeof(FONT_UBO);
 
 		descriptorSetsConfig[FONT_RENDER_SAMPLER].actualLinkedDescriptorBindingsNumber          = 1;
-		descriptorSetsConfig[FONT_RENDER_SAMPLER].hostDescriptorNumber                          = MAX_TEXTURES;
+		descriptorSetsConfig[FONT_RENDER_SAMPLER].hostDescriptorNumber                          = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[FONT_RENDER_SAMPLER].isTexture                                     = true;
 
 		descriptorBindingsConfig[5].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -276,14 +286,22 @@ namespace GLVM::core
 		renderPassConfigs[FONT_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[FONT_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[FONT_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[FONT_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[FONT_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[FONT_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 		
 		/// ===================================================================================== ///
 
@@ -329,14 +347,22 @@ namespace GLVM::core
 		renderPassConfigs[HUD_SCREEN_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[HUD_SCREEN_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[HUD_SCREEN_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[HUD_SCREEN_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -351,7 +377,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[7].uboChunkSize            = sizeof(UI_UBO);
 
 		descriptorSetsConfig[UI_SAMPLERS].actualLinkedDescriptorBindingsNumber                  = 1;
-		descriptorSetsConfig[UI_SAMPLERS].hostDescriptorNumber                                  = MAX_TEXTURES;
+		descriptorSetsConfig[UI_SAMPLERS].hostDescriptorNumber                                  = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[UI_SAMPLERS].isTexture                                             = true;
 
 		descriptorBindingsConfig[8].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -391,14 +417,22 @@ namespace GLVM::core
 		renderPassConfigs[UI_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[UI_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[UI_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[UI_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -413,7 +447,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[9].uboChunkSize            = sizeof(UI_UBO);
 
 		descriptorSetsConfig[UI_ICONS_SAMPLERS].actualLinkedDescriptorBindingsNumber            = 1;
-		descriptorSetsConfig[UI_ICONS_SAMPLERS].hostDescriptorNumber                            = MAX_TEXTURES;
+		descriptorSetsConfig[UI_ICONS_SAMPLERS].hostDescriptorNumber                            = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[UI_ICONS_SAMPLERS].isTexture                                       = true;
 
 		descriptorBindingsConfig[10].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -453,14 +487,22 @@ namespace GLVM::core
 		renderPassConfigs[UI_ICONS_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[UI_ICONS_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[UI_ICONS_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_ICONS_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[UI_ICONS_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -475,7 +517,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[11].uboChunkSize            = sizeof(VIRTUAL_TEXTURE_UBO);
 
 		descriptorSetsConfig[VIRTUAL_TEXTURES_TILESET].actualLinkedDescriptorBindingsNumber     = 1;
-		descriptorSetsConfig[VIRTUAL_TEXTURES_TILESET].hostDescriptorNumber                     = MAX_TEXTURES;
+		descriptorSetsConfig[VIRTUAL_TEXTURES_TILESET].hostDescriptorNumber                     = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[VIRTUAL_TEXTURES_TILESET].isTexture                                = true;
 
 		descriptorBindingsConfig[12].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -515,14 +557,22 @@ namespace GLVM::core
 		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[VIRTUAL_TEXTURES_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -562,7 +612,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[17].shaderDescriptorsNumber = 8;
 
 		descriptorSetsConfig[MAIN_RENDER_SPECULAR_SAMPLER].actualLinkedDescriptorBindingsNumber = 1;
-		descriptorSetsConfig[MAIN_RENDER_SPECULAR_SAMPLER].hostDescriptorNumber                 = MAX_TEXTURES;
+		descriptorSetsConfig[MAIN_RENDER_SPECULAR_SAMPLER].hostDescriptorNumber                 = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[MAIN_RENDER_SPECULAR_SAMPLER].isTexture                            = true;
 
 		descriptorBindingsConfig[18].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -571,7 +621,7 @@ namespace GLVM::core
 		descriptorBindingsConfig[18].shaderDescriptorsNumber = 1;
 
 		descriptorSetsConfig[MAIN_RENDER_DIFFUSE_SAMPLER].actualLinkedDescriptorBindingsNumber  = 1;
-		descriptorSetsConfig[MAIN_RENDER_DIFFUSE_SAMPLER].hostDescriptorNumber                  = MAX_TEXTURES;
+		descriptorSetsConfig[MAIN_RENDER_DIFFUSE_SAMPLER].hostDescriptorNumber                  = TEXTURE_DESCRIPTOR_SETS_NUMBER;
 		descriptorSetsConfig[MAIN_RENDER_DIFFUSE_SAMPLER].isTexture                             = true;
 
 		descriptorBindingsConfig[19].vkType                  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -611,14 +661,22 @@ namespace GLVM::core
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[MAIN_RENDER_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -664,19 +722,27 @@ namespace GLVM::core
 		renderPassConfigs[SDF_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[SDF_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[SDF_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SDF_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[SDF_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SDF_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
 		descriptorSetsConfig[COLLISIONS_DEBUG_DATA].actualLinkedDescriptorBindingsNumber                   = 1;
-		descriptorSetsConfig[COLLISIONS_DEBUG_DATA].hostDescriptorNumber                                   = 128;
+		descriptorSetsConfig[COLLISIONS_DEBUG_DATA].hostDescriptorNumber                                   = 1024;
 		descriptorSetsConfig[COLLISIONS_DEBUG_DATA].isTexture                                              = false;
 
 		descriptorBindingsConfig[21].vkType                  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -718,14 +784,22 @@ namespace GLVM::core
 		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[COLLISIONS_DEBUG_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -773,14 +847,22 @@ namespace GLVM::core
 		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[SPACIAL_GRID_DEBUG_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 
 		/// ===================================================================================== ///
 
@@ -828,14 +910,22 @@ namespace GLVM::core
 		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].attachmentReferences[1].attachment       = 1;
 		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].attachmentReferences[1].layout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		
-		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 1;
-		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = 0;
-		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].actualSubpassDependencyNumber            = 2;
+		/// Order this pass after previous writes to the shared swapchain/depth images.
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].srcSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dstSubpass        = 0;
 		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = {};
-		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[0].dependencyFlags   = {};
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].srcSubpass        = 0;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].dstSubpass        = VK_SUBPASS_EXTERNAL;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].srcStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].dstStageMask      = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].srcAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].dstAccessMask     = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		renderPassConfigs[MATH_OBJECTS_DEBUG_PIPELINE].subpassDependencies[1].dependencyFlags   = {};
 		
 		/*
 		=====================================================================================

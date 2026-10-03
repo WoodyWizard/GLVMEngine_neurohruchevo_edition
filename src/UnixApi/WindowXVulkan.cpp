@@ -6,40 +6,49 @@
 #include "UnixApi/WindowXVulkan.hpp"
 
 #include <X11/Xlib.h>
-#include <bits/types/time_t.h>
-#include <bits/types/wint_t.h>
+#include <X11/Xutil.h>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 
 namespace GLVM::core
 {
+	namespace
+	{
+		/// X11 key codes of evdev/libinput servers (Xorg, XWayland) are evdev codes + 8: layout independent, same keys as Wayland
+		constexpr unsigned int XKEYCODE_ESCAPE = 1 + 8;
+		constexpr unsigned int XKEYCODE_W      = 17 + 8;
+		constexpr unsigned int XKEYCODE_I      = 23 + 8;
+		constexpr unsigned int XKEYCODE_O      = 24 + 8;
+		constexpr unsigned int XKEYCODE_A      = 30 + 8;
+		constexpr unsigned int XKEYCODE_S      = 31 + 8;
+		constexpr unsigned int XKEYCODE_D      = 32 + 8;
+		constexpr unsigned int XKEYCODE_SPACE  = 57 + 8;
+	}
+
     WindowXVulkan::WindowXVulkan()
     {
-        // const int aAttrib[] =
-        // {
-        //     GLX_RENDER_TYPE, GLX_RGBA_BIT,
-        //     GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-        //     GLX_DOUBLEBUFFER, true,
-        //     GLX_RED_SIZE, 1,
-        //     GLX_GREEN_SIZE, 1,
-        //     GLX_BLUE_SIZE, 1,
-        //     None
-        // };
-        
         pDisp_ = XOpenDisplay(NULL);
+		if ( pDisp_ == nullptr ) {
+			fprintf(stderr, "Error: can't open X display (DISPLAY=%s)\n", getenv("DISPLAY") ? getenv("DISPLAY") : "unset");
+			exit(EXIT_FAILURE);
+		}
+
         Root_Window_ = DefaultRootWindow(pDisp_);
         Set_Window_Attributes_.event_mask = KeyPressMask | KeyReleaseMask |
-            PointerMotionMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask;
+            PointerMotionMask | StructureNotifyMask | ButtonPressMask | ButtonReleaseMask | FocusChangeMask;
 
-		width = 1920;
-		height = 1080;
         Win_ = XCreateWindow(pDisp_, Root_Window_, 0, 0, width, height, 0, CopyFromParent, InputOutput,
                             CopyFromParent, CWEventMask, &Set_Window_Attributes_);
-        ///< Show_the_window
+		XStoreName(pDisp_, Win_, "glvm");
 
+		/// Ask the window manager for a WM_DELETE_WINDOW message instead of killing the connection on close
+		wmDeleteWindow_ = XInternAtom(pDisp_, "WM_DELETE_WINDOW", False);
+		XSetWMProtocols(pDisp_, Win_, &wmDeleteWindow_, 1);
+
+        ///< Show_the_window
         XMapWindow(pDisp_, Win_);
 
-        XWarpPointer(pDisp_, None, Win_, 0, 0, 0, 0, 0, 0);
-		
         Cursor invisibleCursor;
         Pixmap bitmapNoData;
         XColor black;
@@ -47,44 +56,65 @@ namespace GLVM::core
         black.red = black.green = black.blue = 0;
 
         bitmapNoData = XCreateBitmapFromData(pDisp_, Win_, noData, 8, 8);
-        invisibleCursor = XCreatePixmapCursor(pDisp_, bitmapNoData, bitmapNoData, 
+        invisibleCursor = XCreatePixmapCursor(pDisp_, bitmapNoData, bitmapNoData,
                                               &black, &black, 0, 0);
         XDefineCursor(pDisp_,Win_, invisibleCursor);
-        
+
         XFreeCursor(pDisp_, invisibleCursor);
         XFreePixmap(pDisp_, bitmapNoData);
-        
-        XGetWindowAttributes(pDisp_, Win_, &GWindow_Attributes_);
-//		const int kInterval = 1;
+		XFlush(pDisp_);
     }
-    
+
     WindowXVulkan::~WindowXVulkan() = default;
 
     Window WindowXVulkan::GetWindow() { return Win_; }
     Display* WindowXVulkan::GetDisplay() { return pDisp_; }
 
-    void WindowXVulkan::CursorLock(int _x_position, int _y_position, int* _x_offset, int* _y_offset)
+	void WindowXVulkan::GrabPointer() {
+		if ( isPointerGrabbed_ || pDisp_ == nullptr )
+			return;
+		///< Link mouse cursor to specified window.
+		const int result = XGrabPointer(pDisp_, Win_, True, PointerMotionMask | ButtonPressMask | ButtonReleaseMask,
+										GrabModeAsync, GrabModeAsync, Win_, None, CurrentTime);
+		isPointerGrabbed_ = result == GrabSuccess;
+	}
+
+	void WindowXVulkan::UngrabPointer() {
+		if ( !isPointerGrabbed_ )
+			return;
+		XUngrabPointer(pDisp_, CurrentTime);
+		isPointerGrabbed_ = false;
+	}
+
+	void WindowXVulkan::SendEvent(CEvent& _Event, EEvents _eEvent) {
+		_Event.SetEvent(_eEvent);
+		Input_Stack_.ControlInput(_Event);
+	}
+
+	/// Per-frame mouse delta (pixels, +x right, +y down); the pointer is re-centered only while the window has focus
+    void WindowXVulkan::CursorLock([[maybe_unused]] int _x_position, [[maybe_unused]] int _y_position, int* _x_offset, int* _y_offset)
     {
-        ///< Solve a problem with endlessly growing numbers in the start game run.
-        // if(_x_position > 1920 || _x_position < 0 || _y_position > 1080 || _y_position < 0)
-        //     return;
+		*_x_offset = motionX_;
+		*_y_offset = motionY_;
+		motionX_ = 0;
+		motionY_ = 0;
 
-        int iOffset_X = 0, iOffset_Y = 0;
-        iOffset_X = _x_position - 960;
-        iOffset_Y = _y_position - 540;
-        
-        *_x_offset += iOffset_X;
-        *_y_offset -= iOffset_Y;
+		if ( !isFocused_ )
+			return;
 
-        if(*_y_offset > 890)
-            *_y_offset = 890;
-        else if(*_y_offset < -890)
-            *_y_offset = -890;
-        
-        XWarpPointer(pDisp_, None, Win_, 0, 0, 0, 0, 960, 540);
+		const int centerX = (int)width / 2;
+		const int centerY = (int)height / 2;
+		if ( hasLastPointerPosition_ && lastPointerX_ == centerX && lastPointerY_ == centerY )
+			return;
+
+        XWarpPointer(pDisp_, None, Win_, 0, 0, 0, 0, centerX, centerY);
         XFlush(pDisp_);
+		/// Motion after the warp is measured from the center; the warp itself is not counted as movement
+		lastPointerX_ = centerX;
+		lastPointerY_ = centerY;
+		hasLastPointerPosition_ = true;
     }
-    
+
     void WindowXVulkan::SwapBuffers()
     {
     }
@@ -97,81 +127,75 @@ namespace GLVM::core
     {
         XEvent uXEvent;
 
-        while(XPending(pDisp_))
+        while(pDisp_ != nullptr && XPending(pDisp_))
         {
             XNextEvent(pDisp_, &uXEvent);
-			KeySym ulKey;
-            unsigned int uiMouse_Button;
-            XMotionEvent motion;
 
 			switch(uXEvent.type)
 			{
-            case MotionNotify:
-                motion = uXEvent.xmotion;
-
-                _Event.SetEvent(EEvents::eMOUSE_POINTER_POSITION);
-                _Event.mousePointerPosition.position_X = motion.x;
-                _Event.mousePointerPosition.position_Y = motion.y;
-
-                ///< Search MapNotify events depend on XMapWindow(pDisp_, Win_) function.
-//				break;
+            case MotionNotify: {
+				const int x = uXEvent.xmotion.x;
+				const int y = uXEvent.xmotion.y;
+                _Event.mousePointerPosition.position_X = x;
+                _Event.mousePointerPosition.position_Y = y;
+				if ( hasLastPointerPosition_ ) {
+					motionX_ += x - lastPointerX_;
+					motionY_ += y - lastPointerY_;
+				}
+				lastPointerX_ = x;
+				lastPointerY_ = y;
+				hasLastPointerPosition_ = true;
+                break;
+			}
             case MapNotify:
-                ///< Link mouse cursor to specified window.
-                XGrabPointer
-                    (
-                        pDisp_, Win_, 
-                        True, PointerMotionMask,
-                        GrabModeAsync, GrabModeAsync,
-                        Win_,
-                        None, CurrentTime
-                    );
+				GrabPointer();
                 break;
+			case ConfigureNotify:
+				if ( uXEvent.xconfigure.width > 0 && uXEvent.xconfigure.height > 0 ) {
+					width  = (uint32_t)uXEvent.xconfigure.width;
+					height = (uint32_t)uXEvent.xconfigure.height;
+				}
+				break;
+			case FocusIn:
+				isFocused_ = true;
+				hasLastPointerPosition_ = false;
+				GrabPointer();
+				break;
+			case FocusOut:
+				/// Release events of keys held now go to another window: release everything, let the pointer go
+				isFocused_ = false;
+				hasLastPointerPosition_ = false;
+				UngrabPointer();
+				releaseHeldInput();
+				break;
+			case ClientMessage:
+				if ( (Atom)uXEvent.xclient.data.l[0] == wmDeleteWindow_ )
+					SendEvent(_Event, EEvents::eGAME_LOOP_KILL);
+				break;
             case ButtonPress:
-                uiMouse_Button = uXEvent.xbutton.button;
-                switch(uiMouse_Button)
-                {
-                case 1:
-                    _Event.SetEvent(EEvents::eMOUSE_LEFT_BUTTON);
-                    break;
+                if ( uXEvent.xbutton.button == Button1 ) {
+					GrabPointer();
+                    SendEvent(_Event, EEvents::eMOUSE_LEFT_BUTTON);
                 }
                 break;
-
             case ButtonRelease:
-                uiMouse_Button = uXEvent.xbutton.button;
-                switch(uiMouse_Button)
-                {
-                case 1:
-                    _Event.SetEvent(EEvents::eMOUSE_LEFT_BUTTON_RELEASE);
+                if ( uXEvent.xbutton.button == Button1 ) {
+                    SendEvent(_Event, EEvents::eMOUSE_LEFT_BUTTON_RELEASE);
 					_Event.isLeftMouseButtonReleased = true;
-                    break;
                 }
                 break;
-                
 			case KeyPress:
-				ulKey = XLookupKeysym(&uXEvent.xkey, 0);
-				switch(ulKey)
+				switch(uXEvent.xkey.keycode)
 				{
-				case XKEY_I:
-					_Event.SetEvent(EEvents::eINVENTORY);
-					break;
-				case XKEY_ESCAPE:
-					_Event.SetEvent(EEvents::eGAME_LOOP_KILL);
-					break;
-				case XKEY_A:
-					_Event.SetEvent(EEvents::eMOVE_LEFT);
-					break;
-				case XKEY_D:
-					_Event.SetEvent(EEvents::eMOVE_RIGHT);
-					break;
-				case XKEY_S:
-					_Event.SetEvent(EEvents::eMOVE_BACKWARD);
-					break;
-				case XKEY_W:
-					_Event.SetEvent(EEvents::eMOVE_FORWARD);
-					break;
-                case XKEY_SPACE:
-                    _Event.SetEvent(EEvents::eJUMP);
-                    break;
+				case XKEYCODE_I:      SendEvent(_Event, EEvents::eINVENTORY);               break;
+				case XKEYCODE_O:      SendEvent(_Event, EEvents::eDEBUG_COLLISIONS_ACTIVE); break;
+				case XKEYCODE_ESCAPE: SendEvent(_Event, EEvents::eGAME_LOOP_KILL);          break;
+				case XKEYCODE_A:      SendEvent(_Event, EEvents::eMOVE_LEFT);               break;
+				case XKEYCODE_D:      SendEvent(_Event, EEvents::eMOVE_RIGHT);              break;
+				case XKEYCODE_S:      SendEvent(_Event, EEvents::eMOVE_BACKWARD);           break;
+				case XKEYCODE_W:      SendEvent(_Event, EEvents::eMOVE_FORWARD);            break;
+				case XKEYCODE_SPACE:  SendEvent(_Event, EEvents::eJUMP);                    break;
+				default: break;
 				}
 				break;
 
@@ -180,53 +204,40 @@ namespace GLVM::core
 				{
 					XEvent uXNext_Event;
 					XPeekEvent(pDisp_, &uXNext_Event);
-    
+
 					if (uXNext_Event.type == KeyPress && uXNext_Event.xkey.time == uXEvent.xkey.time &&
 						uXNext_Event.xkey.keycode == uXEvent.xkey.keycode)
 					{
-						///< Key wasn’t actually released
+						///< Key wasn’t actually released (auto repeat): drop both events
                         XNextEvent(pDisp_, &uXNext_Event);
 						continue;
 					}
 				}
-		    	ulKey = XLookupKeysym(&uXEvent.xkey, 0);
-                switch(ulKey)
+				/// The toggles (I, O) have no release events: the engine consumes them itself
+                switch(uXEvent.xkey.keycode)
                 {
-				case XKEY_I:
-					_Event.SetEvent(EEvents::eINVENTORY_RELEASE);
-					break;
-                case XKEY_A:
-                    _Event.SetEvent(GLVM::core::eKEYRELEASE_A);
-                    break;
-                case XKEY_D:
-                    _Event.SetEvent(GLVM::core::eKEYRELEASE_D);
-                    break;
-                case XKEY_S:
-                    _Event.SetEvent(GLVM::core::eKEYRELEASE_S);
-                    break;
-                case XKEY_W:
-                    _Event.SetEvent(GLVM::core::eKEYRELEASE_W);
-                    break;
-                case XKEY_SPACE:
-                    _Event.SetEvent(GLVM::core::eKEYRELEASE_JUMP);
-                    break;
+                case XKEYCODE_A:     SendEvent(_Event, EEvents::eKEYRELEASE_A);    break;
+                case XKEYCODE_D:     SendEvent(_Event, EEvents::eKEYRELEASE_D);    break;
+                case XKEYCODE_S:     SendEvent(_Event, EEvents::eKEYRELEASE_S);    break;
+                case XKEYCODE_W:     SendEvent(_Event, EEvents::eKEYRELEASE_W);    break;
+                case XKEYCODE_SPACE: SendEvent(_Event, EEvents::eKEYRELEASE_JUMP); break;
+				default: break;
                 }
 				break;
+			default:
+				break;
 			}
-
-			Input_Stack_.ControlInput(_Event);
         }
 		return false;
     }
 
     void WindowXVulkan::Close()
     {
+		if ( pDisp_ == nullptr )
+			return;
+		UngrabPointer();
         XDestroyWindow(pDisp_, Win_);
-//        XFreeColormap(pDisp_, Color_Map_);
-//        XFree(pVisual_);
-//        XFree(pFbc_);
         XCloseDisplay(pDisp_);
+		pDisp_ = nullptr;
     }
 }
-
-

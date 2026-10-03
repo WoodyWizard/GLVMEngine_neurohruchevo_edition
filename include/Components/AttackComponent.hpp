@@ -10,7 +10,7 @@ namespace GLVM::ecs::components
 {
 	struct attack
 	{
-		float damage;
+		float damage = 0.0f;               ///< Damage received on the current frame. DamageSystem applies and resets it.
 	};
 }
 

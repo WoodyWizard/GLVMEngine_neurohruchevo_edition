@@ -3,6 +3,9 @@
 // Author: Maksim Manokhin a.k.a. Yuriorkis_Scream
 // License: http://opensource.org/licenses/MIT
 
+#ifndef GLVM_GLOBALS_HPP
+#define GLVM_GLOBALS_HPP
+
 #include "Event.hpp"
 #include "Vector.hpp"
 #include "VkStructs.hpp"
@@ -35,9 +38,12 @@ extern GLVM::core::vector<GLVM::core::MeshAxisMaxAbsoluteValues> allMeshMaxAbsol
 // extern struct xdg_surface *xdg_surface;
 //extern GLVM::core::CStack Input_Stack_;
 
-extern int x_pointer;
-extern int y_pointer;
-extern int keys_pressed[6];
+/// Sends release events for every key and mouse button the engine tracks, so nothing stays "held"
+/// when the window loses focus (the release events of keys held at that moment are never delivered).
+/// Defined in src/UnixApi/WaylandVariables.cpp (compiled on every platform).
+void releaseHeldInput();
 
 #define ARCHETYPE_CHUNK_SIZE 16384
+
+#endif
 

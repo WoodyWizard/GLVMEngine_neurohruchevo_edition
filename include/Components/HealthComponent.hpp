@@ -10,8 +10,8 @@ namespace GLVM::ecs::components
 {
 	struct health
 	{
-		float maxHealth; 
-        float currentHealth;
+		float maxHealth     = 100.0f;
+        float currentHealth = 100.0f;
 		bool randarable = true;
 	};
 }

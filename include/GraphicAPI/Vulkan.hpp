@@ -20,6 +20,7 @@
 #include <optional>
 #include <set>
 #include <cmath>
+#include <atomic>
 #include <vulkan/vulkan_core.h>
 
 #include "Components/ItemComponent.hpp"
@@ -40,7 +41,6 @@
 #include "JsonParser.hpp"
 #include "ShaderStructs.hpp"
 #include "Components/FontComponent.hpp"
-#include <print>
 #include "PGA.hpp"
 #include "VkBuilders.hpp"
 #include "VkDebugUtils.hpp"
@@ -89,7 +89,6 @@ namespace GLVM::core
     const uint32_t WIDTH = 800;
     const uint32_t HEIGHT = 600;
 
-    const int MAX_FRAMES_IN_FLIGHT = 2;
 //#define NDEBUG
     const std::vector<const char*> validationLayers = {
 //        "VK_LAYER_KHRONOS_validation"
@@ -125,6 +124,13 @@ namespace GLVM::core
         std::vector<VkPresentModeKHR> presentModes;
     };
     
+
+	enum ShadowMapType : uint32_t {
+		DIRECTIONAL_SHADOW_MAP,
+		SPOT_SHADOW_MAP,
+		POINT_SHADOW_MAP,
+		SHADOW_MAP_TYPES_NUMBER
+	};
 
     class CVulkanRenderer {
     public:
@@ -236,7 +242,7 @@ namespace GLVM::core
         VkDebugUtilsMessengerEXT debugMessenger;
 		mat4 viewMatrix;
 		mat4 projectionMatrix;
-		ThreadPool* renderThreadPool;
+		ThreadPool* renderThreadPool = nullptr;
 
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
 		VkWaylandSurfaceCreateInfoKHR createWaylandSurfaceInfo;
@@ -265,36 +271,15 @@ namespace GLVM::core
         VkSwapchainKHR swapChain;
         std::vector<VkImage> swapChainImages;
         VkFormat swapChainImageFormat;
-        VkExtent2D swapChainExtent;
+        VkExtent2D swapChainExtent{};
         std::vector<VkImageView> swapChainImageViews;
         std::vector<VkFramebuffer> swapChainFramebuffers;
 
-		VkBuffer hudUniformBuffer;
-		VkDeviceMemory hudUniformBuffersMemory;
-		VkBuffer fontUniformBuffer;
-		VkDeviceMemory fontUniformBuffersMemory;
-		VkBuffer hudScreenUniformBuffer;
-		VkDeviceMemory hudScreenUniformBuffersMemory;
-		VkBuffer uiUniformBuffer;
-		VkDeviceMemory uiUniformBuffersMemory;
-		VkBuffer uiIconsUniformBuffer;
-		VkDeviceMemory uiIconsUniformBuffersMemory;
 		core::vector<VkDescriptorSet> virtualTexturesUBODesctiptorSets;
 		core::vector<VkDescriptorSet> virtualTexturesSamplersDesctiptorSets;
-		VkBuffer virtualTexturesUniformBuffer;
-		VkDeviceMemory virtualTexturesUniformBufferMemory;
 		
-        VkCommandPool directionalLightCommandPool;
-		VkCommandPool spotLightCommandPool;
-		VkCommandPool pointLightCommandPool;
-		VkCommandPool fontCommandPool;
-		VkCommandPool hudCommandPool;
-		VkCommandPool hudScreenCommandPool;
-		VkCommandPool uiCommandPool;
-		VkCommandPool uiIconsCommandPool;
-		VkCommandPool mainRenderCommandPool;
+		VkCommandPool mainRenderCommandPool = VK_NULL_HANDLE;
 		std::vector<VkCommandPool> secondaryBuffersCommandPools;
-		VkCommandPool virtualTexturesCommandPool;
 
 		/// Main pipeline depth.
 		VkImage     mainDepthPipelineImage;
@@ -305,8 +290,6 @@ namespace GLVM::core
 	public:
 		unsigned int	directionalLightNumber = 0;
 		std::vector<VkFramebuffer> directionalLightShadowMapFrameBuffers;
-		VkBuffer shadowMapDirectionalLightModelMatrixUniformBuffer;
-		VkDeviceMemory shadowMapDirectionalLightModelMatrixUniformBuffersMemory;
 		core::vector<VK_Image> directionalLightTextureImages;
 
 		/*
@@ -320,18 +303,18 @@ namespace GLVM::core
 		
 		unsigned int	pointLightNumber	   = 0;
 		std::vector<std::vector<VkFramebuffer>> pointLightShadowMapFrameBuffers;
-		VkBuffer shadowMapPointLightModelMatrixUniformBuffer;
-		VkDeviceMemory shadowMapPointLightModelMatrixUniformBuffersMemory;
 		core::vector<VK_Image> pointLightTextureImages;
 
 		unsigned int	spotLightNumber		   = 0;
 		std::vector<VkFramebuffer> spotLightShadowMapFrameBuffers;
-		VkBuffer shadowMapSpotLightModelMatrixUniformBuffer;
-		VkDeviceMemory shadowMapSpotLightModelMatrixUniformBuffersMemory;
 		core::vector<VK_Image> spotLightTextureImages;
 
+		/// Number of shadow map slots that hold a full size map, the remaining slots hold 1x1 placeholders.
+		uint32_t allocatedShadowMapsNumber[SHADOW_MAP_TYPES_NUMBER] = {};
+
 		std::vector<VK_Image> textureImages;
-		VkSampler textureSampler;
+		VkSampler textureSampler = VK_NULL_HANDLE;
+		VkSampler shadowMapSampler = VK_NULL_HANDLE;
 
         std::vector<VkBuffer> vertexBufferContainer;
         std::vector<VkDeviceMemory> vertexBufferMemoryContainer;
@@ -354,22 +337,12 @@ namespace GLVM::core
         std::vector<VkBuffer> fontIndexBufferContainer;
         std::vector<VkDeviceMemory> fontIndexBufferMemoryContaner;
 		
-        VkBuffer modelMatrixUniformBuffer;
-        VkDeviceMemory modelMatrixUniformBuffersMemory;
-        VkBuffer lightDataUniformBuffer;
-        VkDeviceMemory lightDataUniformBuffersMemory;
 
 		// VkDescriptorImageInfo directionalLightsImageInfo[DIRECTIONAL_LIGHTS_NUMBER];
 		// VkDescriptorImageInfo pointLightsImageInfo[POINT_LIGHTS_NUMBER];
 		// VkDescriptorImageInfo spotLightsImageInfo[SPOT_LIGHTS_NUMBER];
 		
         VkDescriptorPool descriptorPool;
-		const unsigned int matrixUboDescriptorsNumber = 500;
-		const unsigned int hudUboDescriptorNumber = 500;
-		const unsigned int fontUboDescriptorNumber = 128;
-		const unsigned int hudScreenUboDescriptorNumber = 32;
-		const u32          spacialGridWireFrameUboNumber = 8192;
-		const unsigned int uiUboDescriptorsNumber = 64;
 //		const unsigned int uiIconsDescriptorsNumber = 64;
 		[[maybe_unused]] const unsigned int virtualTexturesDescriptorsNumber= 64;
 //		unsigned int viewPositionUboDescriptorsNumber = 0;
@@ -434,6 +407,10 @@ namespace GLVM::core
 		std::mutex shadowMapPassesMutex;
 		
         bool framebufferResized = false;
+		bool swapChainExtentFollowsWindow = false;           ///< Surface has no fixed extent (Wayland): the window size defines the swapchain size
+		VkExtent2D swapChainWindowSize{};                    ///< Window size the current swapchain was created for
+		bool swapChainRecreatePending = false;               ///< Swapchain couldn't be recreated (zero sized window), retry on the next frame
+		std::atomic<uint32_t> reportedUboOverflows{0};       ///< Bit per pipeline, uniform slot overflow is reported only once
 
         void initWindow();
         void initVulkan();
@@ -461,9 +438,18 @@ namespace GLVM::core
 		void createFramebuffers();
         void createCommandPool( VkCommandPool& commandPool );
         void createDepthResources();
-		void createDirectionalLightShadowMapDepthResources();
-		void createSpotLightShadowMapDepthResources();
-		void createPointLightShadowMapDepthResources();
+		VK_Image createShadowMapImage( uint32_t size, bool isCube, const std::string& debugName );
+		VK_Image* shadowMapSlot( ShadowMapType type, uint32_t index );
+		void createShadowMapResources();
+		void growShadowMaps( ShadowMapType type, uint32_t requiredNumber );
+		void ensureShadowMaps();
+		void destroyShadowMapFramebuffers();
+		void createRenderFinishedSemaphores();
+		void destroyRenderFinishedSemaphores();
+		void reportUboOverflow( SpecificPipeline pipeline );
+		u32 perFrameDescriptorNumber( DescriptorSetDataLink descriptorSetDataLink ) const;
+		template<class T> T* mappedUBO( DescriptorSetDataLink descriptorSetDataLink, u32 index );
+		VkDescriptorSet* textureDescriptorSet( const DescriptorSet& descriptorSet, u32 textureID );
         VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
         VkFormat findDepthFormat();
         bool hasStencilComponent(VkFormat format);
@@ -472,7 +458,6 @@ namespace GLVM::core
         VkImageView createImageView(VK_Image image, uint32_t baseArrayLayers, uint32_t layerCount);
         void createImage(VK_Image& image);
         void transitionImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout);
-		void transitionShadowMapImageLayout(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout);
         void copyBufferToImage(VkBuffer& buffer, VkImage image, uint32_t width, uint32_t height);
         void createVertexBuffer(VkBuffer& _vertexBuffer, VkDeviceMemory& _vertexBufferMemory, core::vector<Vertex>& _vertices);
         void createIndexBuffer(VkBuffer& _indexBuffer, VkDeviceMemory& _indexBufferMemory, const std::vector<uint32_t>& _indices);
@@ -518,7 +503,7 @@ namespace GLVM::core
         void createSyncObjects(std::vector<VkSemaphore> &imageAvailableSemaphores,
                           std::vector<VkSemaphore> &renderFinishedSemaphores,
                           std::vector<VkFence> &inFlightFences);
-        void mapMemoryUBO( SpecificPipeline pipeline, DescriptorSetDataLink descriptorSetDataLink, u32 uboDataSize, u32 descriptorSetID = 0 );
+        void mapUniformBuffers();
 		void updateDirectionalLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, unsigned int actor);
 		void updateSpotLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, unsigned int actor);
 		void updatePointLightShadowMapMatrixUBO(uint32_t currentImage, uint32_t currentLight, uint32_t layer, unsigned int actor);

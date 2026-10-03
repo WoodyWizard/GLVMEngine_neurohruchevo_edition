@@ -13,8 +13,6 @@
 
 #include <xcb/xcb.h>
 #include <xcb/xproto.h>
-#include <xcb/xcb_keysyms.h>
-#include <xcb/xcb_cursor.h>
 #include <cassert>
 #include <iostream>
 #include "EventsStack.hpp"
@@ -23,22 +21,32 @@
 namespace GLVM::core
 {
     typedef uint32_t xcb_window_t;
-	
+
 	class WindowXCBVulkan : public IWindow
 	{
-		xcb_connection_t*  connection;
-		xcb_screen_t*      screen;
-		xcb_window_t       window;
-		xcb_key_symbols_t* key_symbols;
-		xcb_generic_event_t* next_generic_event = NULL;
+		xcb_connection_t*  connection = nullptr;
+		xcb_screen_t*      screen = nullptr;
+		xcb_window_t       window = 0;
+		xcb_generic_event_t* pending_event = nullptr;            ///< Event read ahead by the auto repeat check
+		xcb_atom_t         wm_delete_window = XCB_ATOM_NONE;
+		bool               isFocused = false;
+		bool               isPointerGrabbed = false;
+		bool               hasLastPointerPosition = false;
+		int                lastPointerX = 0;
+		int                lastPointerY = 0;
+		int                motionX = 0;                          ///< Pointer motion accumulated since the last CursorLock
+		int                motionY = 0;
 
 		static void print_modifiers (uint32_t mask);
+		xcb_atom_t InternAtom(const char* name);
+		void GrabPointer();
+		void UngrabPointer();
+		void SendEvent(CEvent& _Event, EEvents _eEvent);
 	public:
-//		CStack           * Input_Stack_;
-		uint32_t           width;
-		uint32_t           height;
+		uint32_t           width = 1920;
+		uint32_t           height = 1080;
 		bool               isWindowResizeRead = false;
-		
+
 		WindowXCBVulkan ();
 
 		void configureWindow();

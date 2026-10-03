@@ -34,9 +34,9 @@ namespace GLVM::Core
         JSON_NULL,
         JSON_ARRAY
     };
-	
+
 	struct JsonValue;
-	
+
     union JsonVariant
     {
         std::string* string;
@@ -46,11 +46,15 @@ namespace GLVM::Core
         void* null;
         GLVM::core::vector<JsonValue>* array;
         HashMap<JsonValue>* object;
-        JsonVariant() {}
+        JsonVariant() { memset((void*)this, 0, sizeof(JsonVariant)); }          ///< All bytes are zeroed: reading an inactive member never gives garbage
 		JsonVariant(const JsonVariant& object) {
 			memcpy((void*)this, &object, sizeof(JsonVariant));
 		}
-		
+		JsonVariant& operator=(const JsonVariant& object) {
+			memcpy((void*)this, &object, sizeof(JsonVariant));
+			return *this;
+		}
+
         ~JsonVariant() {}
     };
 
@@ -58,7 +62,7 @@ namespace GLVM::Core
     {
         JsonVariant value;
         JsonType type;
-		
+
 		JsonValue() { type = JSON_INVALID_VALUE; }
 		JsonValue(std::string _string) {
 			type = JSON_STRING;
@@ -76,115 +80,26 @@ namespace GLVM::Core
 			type = JSON_BOOLEAN;
 			value.boolean = _bool;
 		}
-		// JsonValue(void* _null) {
-		// 	type = JSON_NULL;
-		// 	value.null = _null;
-		// }
-		
+
 		JsonValue(const JsonValue& _value) {
 			type = JSON_INVALID_VALUE;
-			
-			switch (_value.type) {
-			case JSON_OBJECT:
-				value.object = new HashMap<JsonValue>(*_value.value.object);
-				break;
-			case JSON_INTEGER_NUMBER:
-				value.iNumber = _value.value.iNumber;
-				break;
-			case JSON_FLOAT_NUMBER:
-				value.fNumber = _value.value.fNumber;
-				break;
-			case JSON_STRING:
-				value.string = new std::string(*_value.value.string);
-				break;
-			case JSON_BOOLEAN:
-				value.boolean = _value.value.boolean;
-				break;
-			case JSON_NULL:
-				value.null = _value.value.null;
-				break;
-			case JSON_ARRAY:
-				value.array = new core::vector<JsonValue>(*_value.value.array);
-				break;
-			default:
-				break;
-			}
-			type = _value.type;
+			CopyFrom(_value);
 		}
 
 		~JsonValue() {
-			switch (type) {
-			case JSON_INVALID_VALUE:
-				break;
-			case JSON_OBJECT:
-				delete value.object;
-				break;
-			case JSON_INTEGER_NUMBER:
-				break;
-			case JSON_FLOAT_NUMBER:
-				break;
-			case JSON_STRING:
-				delete value.string;
-				break;
-			case JSON_BOOLEAN:
-				break;
-			case JSON_NULL:
-				break;
-			case JSON_ARRAY:
-				delete value.array;
-				break;
-			}
+			Release();
 		}
-		
-		void operator=(const JsonValue& _value) {
-			switch (type) {
-			case JSON_INVALID_VALUE:
-				break;
-			case JSON_OBJECT:
-				delete value.object;
-				break;
-			case JSON_INTEGER_NUMBER:
-				break;
-			case JSON_FLOAT_NUMBER:
-				break;
-			case JSON_STRING:
-				delete value.string;
-				break;
-			case JSON_BOOLEAN:
-				break;
-			case JSON_NULL:
-				break;
-			case JSON_ARRAY:
-				delete value.array;
-				break;
-			}
 
-			switch (_value.type) {
-			case JSON_OBJECT:
-				value.object = new HashMap<JsonValue>(*_value.value.object);
-				break;
-			case JSON_INTEGER_NUMBER:
-				value.iNumber = _value.value.iNumber;
-				break;
-			case JSON_FLOAT_NUMBER:
-				value.fNumber = _value.value.fNumber;
-				break;
-			case JSON_STRING:
-				value.string = new std::string(*_value.value.string);
-				break;
-			case JSON_BOOLEAN:
-				value.boolean = _value.value.boolean;
-				break;
-			case JSON_NULL:
-				value.null = _value.value.null;
-				break;
-			case JSON_ARRAY:
-				value.array = new core::vector<JsonValue>(*_value.value.array);
-				break;
-			default:
-				break;
-			}
-			type = _value.type;
+		JsonValue& operator=(const JsonValue& _value) {
+			if (this == &_value)
+				return *this;
+
+			JsonValue copy(_value);                     ///< Copy first: _value may be owned by this value
+			Release();
+			value = copy.value;
+			type  = copy.type;
+			copy.type = JSON_INVALID_VALUE;             ///< Ownership moved, the copy must not free anything
+			return *this;
 		}
 
 		JsonValue& operator[](std::string key_) {
@@ -202,6 +117,8 @@ namespace GLVM::Core
 		JsonValue& operator[](const unsigned int index_) {
 			switch (type) {
 			case JSON_ARRAY:
+				if (index_ >= value.array->GetSize())
+					throw std::out_of_range("Json array index is out of range");
 				return (*value.array)[index_];
 				break;
 			default:
@@ -210,49 +127,131 @@ namespace GLVM::Core
 			}
 		}
 
-		bool isInvalid()  { return type == JSON_INVALID_VALUE; }
-		bool isObject()   { return type == JSON_OBJECT; }
-		bool isFloat()    { return type == JSON_FLOAT_NUMBER; }
-		bool isInterger() { return type == JSON_INTEGER_NUMBER; }
-		bool isString()   { return type == JSON_STRING; }
-		bool isBoolean()  { return type == JSON_BOOLEAN; }
-		bool isNull()     { return type == JSON_NULL; }
-		bool isArray()    { return type == JSON_ARRAY; }
+		/// Read-only member lookup: nullptr if this is not an object or the key is missing (never inserts).
+		const JsonValue* find(const char* key) const {
+			if (type != JSON_OBJECT)
+				return nullptr;
+			return value.object->Find(key);
+		}
+
+		/// Read-only array access: nullptr if this is not an array or the index is out of range.
+		const JsonValue* at(const unsigned int index) const {
+			if (type != JSON_ARRAY || index >= value.array->GetSize())
+				return nullptr;
+			return &(*value.array)[index];
+		}
+
+		/// Number of array elements, 0 for any other type.
+		unsigned int size() const {
+			return type == JSON_ARRAY ? value.array->GetSize() : 0;
+		}
+
+		/// Numeric value regardless of integer/float storage.
+		double asNumber(double fallback = 0.0) const {
+			if (type == JSON_INTEGER_NUMBER)
+				return value.iNumber;
+			if (type == JSON_FLOAT_NUMBER)
+				return value.fNumber;
+			return fallback;
+		}
+
+		bool isInvalid()  const { return type == JSON_INVALID_VALUE; }
+		bool isObject()   const { return type == JSON_OBJECT; }
+		bool isFloat()    const { return type == JSON_FLOAT_NUMBER; }
+		bool isInterger() const { return type == JSON_INTEGER_NUMBER; }
+		bool isNumber()   const { return type == JSON_INTEGER_NUMBER || type == JSON_FLOAT_NUMBER; }
+		bool isString()   const { return type == JSON_STRING; }
+		bool isBoolean()  const { return type == JSON_BOOLEAN; }
+		bool isNull()     const { return type == JSON_NULL; }
+		bool isArray()    const { return type == JSON_ARRAY; }
+
+	private:
+		void Release() {
+			switch (type) {
+			case JSON_OBJECT:
+				delete value.object;
+				break;
+			case JSON_STRING:
+				delete value.string;
+				break;
+			case JSON_ARRAY:
+				delete value.array;
+				break;
+			default:
+				break;
+			}
+			type = JSON_INVALID_VALUE;
+		}
+
+		void CopyFrom(const JsonValue& _value) {
+			switch (_value.type) {
+			case JSON_OBJECT:
+				value.object = new HashMap<JsonValue>(*_value.value.object);
+				break;
+			case JSON_INTEGER_NUMBER:
+				value.iNumber = _value.value.iNumber;
+				break;
+			case JSON_FLOAT_NUMBER:
+				value.fNumber = _value.value.fNumber;
+				break;
+			case JSON_STRING:
+				value.string = new std::string(*_value.value.string);
+				break;
+			case JSON_BOOLEAN:
+				value.boolean = _value.value.boolean;
+				break;
+			case JSON_NULL:
+				value.null = _value.value.null;
+				break;
+			case JSON_ARRAY:
+				value.array = new core::vector<JsonValue>(*_value.value.array);
+				break;
+			default:
+				break;
+			}
+			type = _value.type;
+		}
     };
-        
+
+	/*
+	  JSON parser and glTF 2.0 loader. All errors (missing file, malformed JSON, invalid or unsupported
+	  glTF data) are reported with std::runtime_error that names the file.
+	*/
     class CJsonParser
     {
         std::string sJsonFileData_;
-        const char* pJsonFileData_;
-		char currentChar_;
+        const char* pJsonFileData_ = nullptr;
         unsigned int globalFileCounter_ = 0;
-		
+		std::string filePath_;
+
 		core::vector<JsonValue*> stackOfJsonValues_;
-		JsonValue* root_;
-		bool keyFlag = true;
+		JsonValue* root_ = nullptr;
 	    std::string lastKey_ = "";
-		std::string bufferString_ = "";
 
 		void SearchInJsonArray(core::vector<JsonValue>* arrayValue, const char* key_,
 							   core::vector<JsonValue>& resultVector) const;
+		[[noreturn]] void ParseError(const std::string& message) const;
+		void SkipWhitespace();
+		void AddValue(const JsonValue& jsonValue);
+		void OpenContainer(const JsonValue& container);
+		void CloseContainer(JsonType expectedType);
 
     public:
 		void SearchInJsonObject(HashMap<JsonValue>* mapValue, const char* key_,
 								core::vector<JsonValue>& resultVector) const;
-		
+
+		CJsonParser() = default;
+		CJsonParser(const CJsonParser&) = delete;
+		CJsonParser& operator=(const CJsonParser&) = delete;
 		~CJsonParser();
 		JsonValue* GetRoot() { return root_; }
-        void ReadFile(const char* _filePath);
-        void Parse();
+        bool ReadFile(const char* _filePath);                 ///< Returns false if the file can't be read
+        void Parse();                                          ///< Throws std::runtime_error on malformed JSON
 		JsonValue CreateJsonHashMap();
 		JsonValue CreateJsonArray();
 		std::string BoolOrNullParse();
-		bool IsContainChar(std::string _string, char _char);
-		std::string NumberAsStringParse();
+		JsonValue NumberParse();
 		std::string StringParse();
-		core::vector<char> StringToVectorOfChars(std::string _string);
-		int ParseInteger(core::vector<char> _word);
-		double ParseFloating(core::vector<char> _word);
 		core::vector<JsonValue> Search(const char* key_) const;
 		void LoadGLTF(const char* pathsGLTF_,
 					  std::vector<float>& aVertexes_,
@@ -261,11 +260,7 @@ namespace GLVM::Core
 					  core::vector<float>& frames,
 					  bool& noAnimations,
 					  float& topY);
-		void traversalBones(core::vector<core::vector<int>> children, Core::JsonValue joints,
-							core::stack<u32> node_stack, core::stack<u32> deepness_stack, core::vector<core::vector<u32>>& result);
-		core::vector<core::vector<unsigned int>> makeRenderJointsIndices(core::vector<core::vector<unsigned int>>& input);
-		bool containsElemnt(core::vector<core::vector<unsigned int>> container, unsigned int element);
-		unsigned int getJointIndex(Core::JsonValue joints, int searchingIndex);
+		unsigned int getJointIndex(const Core::JsonValue& joints, int searchingIndex) const;
     };
 }
 

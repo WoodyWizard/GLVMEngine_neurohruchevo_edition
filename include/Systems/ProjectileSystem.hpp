@@ -52,10 +52,10 @@ namespace GLVM::ecs
         core::CStack&              inputStack;
 		core::vector<ecs::TextureHandle> textureHandlers;
 		core::vector<ecs::components::MeshHandle> meshHandlers;
-		core::Sound::ISoundEngine* soundEngine;
-        float                      projectileCooldown = 2.0f; 
-		float                      deltaFrameTime;
-		bool                       isInventoryOpened;
+		core::Sound::ISoundEngine* soundEngine        = nullptr;
+        float                      projectileCooldown = 2.0f;
+		float                      deltaFrameTime     = 0.0f;
+		bool                       isInventoryOpened  = false;
 
 		uint32_t playerArchetypesNumber      = 0;
 		uint32_t projectileArchetypesNumber  = 0;

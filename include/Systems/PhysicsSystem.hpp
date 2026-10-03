@@ -22,9 +22,7 @@ namespace GLVM::ecs
     class CPhysicsSystem : public ISystem
     {
     public:
-        float fAcceleration_of_Gravity_;
-        float fDelta_Time_;
-		float& gravity;
+        float fDelta_Time_ = 0.0f;
         core::CStack& Input_Stack_;
 
 		uint32_t cachedArchetypesNumber = 0;
@@ -45,8 +43,7 @@ namespace GLVM::ecs
 			(1ul << arch::ComponentsIndices::RIGID_BODY_COMPONENT) |
 			(1ul << arch::ComponentsIndices::COLLIDER_COMPONENT);
 		
-        CPhysicsSystem(float& gravity_, core::CStack& _input_Stack) : gravity(gravity_),
-																	  Input_Stack_(_input_Stack) {}
+        CPhysicsSystem(core::CStack& _input_Stack) : Input_Stack_(_input_Stack) {}
         
         ///< Set Y-axis of transform component of backtracking entity to upper Y-axis of ground entity.
         

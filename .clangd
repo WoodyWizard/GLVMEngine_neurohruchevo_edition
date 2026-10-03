@@ -1,1 +1,3 @@
-wStandard: 17
+# Exact per-file flags: generate compile_commands.json, e.g. bear -- make -f MakefileLin
+CompileFlags:
+  Add: [-std=c++20]

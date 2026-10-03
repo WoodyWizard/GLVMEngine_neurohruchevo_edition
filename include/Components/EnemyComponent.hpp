@@ -10,7 +10,8 @@ namespace GLVM::ecs::components
 {
 	struct enemy
 	{
-		float detectRadius;
+		float detectRadius   = 15.0f;
+		float attackCooldown = 5.0f;       ///< Own cooldown of every enemy. Decreases on every frame, enemy can shoot when it is <= 0
 	};
 }
 

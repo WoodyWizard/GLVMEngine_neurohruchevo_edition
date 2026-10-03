@@ -45,6 +45,7 @@ namespace GLVM::ecs::arch {
 
 		if( !(id_ < generations.GetSize()) ) {
 			std::cout << "id < getSize protuh" << std::endl;
+			return false;
 		}
 
 		if( !(generations[id_] == getGen( entity_ )) ) {

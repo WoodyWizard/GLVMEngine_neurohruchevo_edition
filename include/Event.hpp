@@ -53,12 +53,12 @@ namespace GLVM::core
 
     struct SMousePointerPosition
     {
-        int position_X;
-        int position_Y;
+        int position_X = 0;
+        int position_Y = 0;
         int offset_X = 0;
         int offset_Y = 0;
-        float pitch;
-        float yaw;
+        float pitch = 0.0f;
+        float yaw = 0.0f;
     };
     
     /*! \class Event
@@ -79,7 +79,7 @@ namespace GLVM::core
         void SetEvent(EEvents _eEvent);
 		void SetNextEvent(EEvents _eEvent);
 		EEvents GetNextEvent();
-		void SetLastEvent(CStack _Stack);
+		void SetLastEvent(const CStack& _Stack);
 
 		bool isLeftMouseButtonReleased = true;
     };

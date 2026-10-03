@@ -62,11 +62,10 @@ namespace GLVM::ecs
 		// 						 const components::material& material,
 		// 						 const components::damage& damage);
 
-		core::Sound::ISoundEngine* soundEngine;
+		core::Sound::ISoundEngine* soundEngine = nullptr;
 		core::vector<ecs::TextureHandle> textureHandlers;
 		core::vector<ecs::components::MeshHandle> meshHandlers;
-		float projectileCooldown = 5.0f; 
-		float deltaFrameTime;
+		float deltaFrameTime = 0.0f;                     ///< Attack cooldown is stored per enemy (components::enemy::attackCooldown)
 	};
 } // namespace GLVM::ecs
 

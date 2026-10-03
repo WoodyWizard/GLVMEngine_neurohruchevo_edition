@@ -10,10 +10,10 @@ namespace GLVM::ecs::components
 {
 	struct damage
 	{
-		float maximumDamage;
-		float minimumDamage;
-		float criticalHitRate;
-		float criticalModifier;
+		float maximumDamage    = 0.0f;
+		float minimumDamage    = 0.0f;
+		float criticalHitRate  = 0.0f;
+		float criticalModifier = 0.0f;
 	};
 }
 

@@ -65,11 +65,11 @@ namespace GLVM::ecs
 		void Update();
 		bool putItem2x2(components::inventory* inventoryComponent, unsigned int itemEntity);
 
-		core::CStack* inputStack;
-		bool          isInventoryOpened;
-		int*          dragedItemEntity;
-		bool*         isLeftMouseButtonReleased;
-		bool          isLeftMouseButtonPressed;
+		core::CStack* inputStack                = nullptr;
+		bool          isInventoryOpened         = false;
+		int*          dragedItemEntity          = nullptr;
+		bool*         isLeftMouseButtonReleased = nullptr;
+		bool          isLeftMouseButtonPressed  = false;
 		float         mouseOffsetX = 0;
 		float         mouseOffsetY = 0;
 	};

@@ -29,9 +29,9 @@ namespace GLVM::core
 
 	EEvents CEvent::GetNextEvent() { return nextEvent; }
 	
-	void CEvent::SetLastEvent(CStack _Stack)
+	void CEvent::SetLastEvent(const CStack& _Stack)
 	{
-		switch(_Stack.Pop())
+		switch(_Stack.Top())
 		{
 		case GLVM::core::eMOVE_RIGHT:
 			SetEvent(GLVM::core::EEvents::eMOVE_RIGHT);

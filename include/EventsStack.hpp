@@ -7,6 +7,7 @@
 #define STACK
 
 #include "Event.hpp"
+#include <cassert>
 #include <iostream>
 
 extern GLVM::core::CStack Input_Stack_;
@@ -34,9 +35,17 @@ namespace GLVM::core
 			++iHead_;
 		}
 
+		/// Last pushed event. Must not be called on empty stack.
 		EEvents& Pop()
 		{
+			assert( iHead_ > 0 );
 			return aStack_[iHead_-1];
+		}
+
+		/// Last pushed event or eDEFAULT if the stack is empty
+		EEvents Top() const
+		{
+			return iHead_ > 0 ? aStack_[iHead_-1] : EEvents::eDEFAULT;
 		}
 
 		void Remove(const EEvents& _Event)
@@ -120,7 +129,7 @@ namespace GLVM::core
 				Push(eDEBUG_COLLISIONS_ACTIVE);
 				break;
 			case eDEBUG_COLLISIONS_INACTIVE:
-				Push(eDEBUG_COLLISIONS_INACTIVE);
+				/// Key release: nothing is pushed (nobody removes this event, it would occupy a stack slot forever)
 				break;
             case eMOUSE_LEFT_BUTTON:
                 Push(eMOUSE_LEFT_BUTTON);

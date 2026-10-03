@@ -24,25 +24,22 @@ namespace GLVM::ecs
 	class CCollisionSystem : public ISystem
 	{   
 	public:
-		float fDelta_Time_;
-		float gravity;
-		bool isInventoryOpened;
-		bool* isItemDraged;
-		bool isLeftMouseButtonPressed;
-		bool* isLeftMouseButtonReleased;
+		float fDelta_Time_              = 0.0f;
+		bool isInventoryOpened          = false;
+		bool* isItemDraged              = nullptr;
+		bool isLeftMouseButtonPressed   = false;
+		bool* isLeftMouseButtonReleased = nullptr;
         core::CStack& Input_Stack_;
 		arch::Archetype* cachedArchetypes[32];
 		uint32_t cachedArchetypesNumber = 0;
-		
+		core::vector<u32> collectedEntities;          ///< Reused buffer with entities collected from grid cells
+
 		struct CollisionComponentsView {
 			components::transform* backtrackingTransforms        = nullptr;
 			components::collider*  backtrackingColliders         = nullptr;
 			components::colliderFlags* backtrackingColliderFlags = nullptr;
 			components::mesh* backtrackingMeshes                 = nullptr;
 			components::move* backtrackingMove = nullptr;
-			components::transform* comparedTransforms            = nullptr;
-			components::mesh*      comparedMeshes                = nullptr;
-			components::move* comparedMove     = nullptr;
 		} view;
 		
 		arch::componentMask	requiredMask = (1ul << arch::ComponentsIndices::COLLIDER_COMPONENT) |

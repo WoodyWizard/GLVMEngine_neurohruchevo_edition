@@ -7,37 +7,39 @@
 #define WINDOW_X_VULKAN
 
 #include <X11/Xlib.h>
+#include <cstdint>
 #include "IWindow.hpp"
 #include "EventsStack.hpp"
 #include "Globals.hpp"
 
-#define XKEY_I      0x69
-#define XKEY_ESCAPE 0xff1b
-#define XKEY_A      0x61
-#define XKEY_D      0x64
-#define XKEY_S      0x73
-#define XKEY_W      0x77
-#define XKEY_SPACE  0x20
-
 namespace GLVM::core
-{    
+{
     class WindowXVulkan : public IWindow
     {
-        XWindowAttributes GWindow_Attributes_;
         Window Root_Window_;
         XSetWindowAttributes Set_Window_Attributes_;
-        
-        //XWindowAttributes gwa_;
+		Atom wmDeleteWindow_ = None;
+		bool isFocused_ = false;
+		bool isPointerGrabbed_ = false;
+		bool hasLastPointerPosition_ = false;
+		int lastPointerX_ = 0;
+		int lastPointerY_ = 0;
+		int motionX_ = 0;                                       ///< Pointer motion accumulated since the last CursorLock
+		int motionY_ = 0;
+
+		void GrabPointer();
+		void UngrabPointer();
+		void SendEvent(CEvent& _Event, EEvents _eEvent);
 
     public:
-        Display* pDisp_;
-        Window Win_;
-		uint32_t           width;
-		uint32_t           height;
+        Display* pDisp_ = nullptr;
+        Window Win_ = 0;
+		uint32_t           width = 1920;
+		uint32_t           height = 1080;
 
         WindowXVulkan();
         ~WindowXVulkan();
-        
+
         Window GetWindow();
         Display* GetDisplay();
         void CursorLock(int _x_position, int _y_position, int* _x_offset, int* _y_offset) override;
@@ -47,7 +49,5 @@ namespace GLVM::core
         void Close() override;
     };
 }
-    
+
 #endif
-
-

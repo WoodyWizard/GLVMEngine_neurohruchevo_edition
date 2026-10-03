@@ -33,6 +33,7 @@ namespace GLVM::ecs::arch {
 			componentIds[1] = ComponentsIndices::HEALTH_COMPONENT;
 			componentIds[2] = ComponentsIndices::FONT_COMPONENT;
 			componentCount = 3;
+			static_assert( DAMAGE_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 }; // namespace GLVM::ecs::arch

@@ -100,6 +100,7 @@ namespace GLVM::ecs::arch {
 			componentIds[12] = ComponentsIndices::ROTATION_COMPONENT;
 			componentIds[13] = ComponentsIndices::MOVE_COMPONENT;
 			componentCount = 14;
+			static_assert( ENEMY_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 }; // namespace GLVM::ecs::arch

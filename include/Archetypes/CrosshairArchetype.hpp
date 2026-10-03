@@ -39,6 +39,7 @@ namespace GLVM::ecs::arch {
 			componentIds[2] = ComponentsIndices::MATERIAL_COMPONENT;
 			componentIds[3] = ComponentsIndices::CROSSHAIR_TAG_COMPONENT;
 			componentCount = 4;
+			static_assert( CROSSHAIR_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 }; // namespace GLVM::ecs::arch

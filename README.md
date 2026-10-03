@@ -1,67 +1,71 @@
 # Game Loop Versatile Modules (GLVM)
 
-This is my simple game engine for Linux and Windows OS's with both Vulkan and Opengl support. Its based on entity component system (ECS) with user friendly C++ interface. Also it has partial support of GLTf and wavefront.obj 3D model formats. With GLVM you can make simple phong light of three types (directional, spot, point). Very basic physics included (collitions, gravity).
+This is my simple game engine for Linux and Windows OS's with Vulkan support. Its based on entity component system (ECS) with user friendly C++ interface. Also it has partial support of GLTf and wavefront.obj 3D model formats. With GLVM you can make simple phong light of three types (directional, spot, point). Very basic physics included (collitions, gravity).
 Updated version 2.0 with: new Archetype ECS (SOA powered), Vulkan config, read-only render objects, VK command sub-buffers. Refactored: inventory system, gltf parser...
 
 ## Linux
-    
-* ### Development libraries:
 
-        X11, Xi, XRandR.
+The Linux build uses the **Wayland** window backend (run it inside a Wayland session: GNOME, KDE Plasma, Sway, ...).
+X11 backends (Xlib, XCB) exist too; they are selected at compile time with `VK_USE_PLATFORM_XLIB_KHR` /
+`VK_USE_PLATFORM_XCB_KHR` instead of `VK_USE_PLATFORM_WAYLAND_KHR` in `include/GraphicAPI/Vulkan.hpp`.
 
-        Vulkan.
+* ### Requirements
 
-        Opengl.
-    
-        Alsa.
+        C++20 compiler: clang (default) with libstdc++ 14 or newer.
 
-        pulseaudio.
+        Libraries: Wayland client, X11 (Xlib, XCB), ALSA, Vulkan loader + headers.
 
-* ### Repository specific:
-* #### Gentoo:
-        emerge --ask x11-libs/libX11 \
-                     x11-libs/libXi \
-                     x11-apps/xrandr \
-                     media-libs/vulkan-loader \
-                     dev-util/vulkan-tools \
-                     media-libs/mesa \
-                     media-libs/alsa-lib \
-                     media-sound/pulseaudio
+        A Vulkan driver for your GPU (Mesa RADV/ANV, NVIDIA).
 
-* #### Debian:
-        apt install libx11-dev \
-                    libxi-dev \
-                    libxrandr-dev
-                    libgl1-mesa-dev \
-                    libasound2-dev \
-                    libpulse-dev \
-                    libudev-dev
+* ### Packages
+* #### Fedora:
+        sudo dnf install clang make wayland-devel libX11-devel libxcb-devel \
+                         alsa-lib-devel vulkan-loader-devel vulkan-headers
+        # sanitizer build (make SANITIZE=1):
+        sudo dnf install compiler-rt
+        # optional: shader compiler for VKshaders/*/compile.sh, Vulkan validation layers
+        sudo dnf install glslang vulkan-validation-layers
+
+* #### Debian / Ubuntu:
+        sudo apt install clang make libwayland-dev libx11-dev libxcb1-dev \
+                         libasound2-dev libvulkan-dev
+        # sanitizer build (make SANITIZE=1): the clang runtime package, e.g. libclang-rt-18-dev
+        # optional:
+        sudo apt install glslang-tools vulkan-validationlayers
 
 * #### Arch:
-        pacman -S libxi \
-                  libxrandr \
-                  mesa \
-                  libglvnd \
-                  alsa-lib \
-                  pulseaudio
+        sudo pacman -S clang make wayland libx11 libxcb alsa-lib vulkan-icd-loader vulkan-headers
+        # sanitizer build (make SANITIZE=1):
+        sudo pacman -S compiler-rt
+        # optional:
+        sudo pacman -S glslang vulkan-validation-layers
 
-* #### Fedora:
-        dnf install libX11-devel \
-                    libXrandr-devel \
-                    libXi-devel \
-                    mesa-libGL-devel \
-                    alsa-lib-devel \
-                    pulseaudio-libs-devel \
-                    libudev-devel \
-                    libstdc++-static
-  
+* #### Gentoo:
+        emerge --ask llvm-core/clang dev-libs/wayland x11-libs/libX11 x11-libs/libxcb \
+                     media-libs/alsa-lib media-libs/vulkan-loader dev-util/vulkan-headers
+
+* ### Building and running
+  Run make in the project root:
+
+      make -f MakefileLin -j$(nproc)              # build/linGame (-O2 -g)
+      make -f MakefileLin run                     # build and start the game
+
+  The game can be started from any directory (`./build/linGame`), but the executable must stay in
+  `build/`: resources are looked up as `../<dir>/` relative to it.
+
+  Build options:
+
+      make -f MakefileLin SANITIZE=1 -j$(nproc)   # ASan + UBSan build: build/linGame-asan
+      make -f MakefileLin WERROR=1                # treat warnings as errors
+      make -f MakefileLin clean
+      make -f MakefileLin wayland-protocols       # regenerate Wayland protocol code from WaylandProtocols/*.xml
+      make -f MakefileLin udp-client              # small UDP test client: build/udpClient
+
 ## Windows
 
 * ### Development libraries:
 
-        Vulkan
-        
-        Opengl
+        Vulkan SDK (https://vulkan.lunarg.com), it sets the VULKAN_SDK environment variable.
 
 * ### Specific tools:
 * #### First of all you need MSYS2:
@@ -76,16 +80,34 @@ Updated version 2.0 with: new Archetype ECS (SOA powered), Vulkan config, read-o
 
   Now we can use just shortened names of packages inside any MSYS2 toolchain:
 
-      pacboy -S gcc:p
-      pacboy -S vulkan:p
+      pacboy -S make:p gcc:p vulkan-devel:p
 
- ## Building GLVM:
-    1. In main project firectory create directory called "build".
-    2. Then copy to main directory preffered Makefile depends on operating system from Makefiles/Lin or Makefiles/Win.
-       If you building from Windows you can choose one of the four make files to build inside cmd, power shell, ucrt MSYS2 or
-       clang64 MSYS2 toolchain.
-    3. After copying make file type next command in project main directory from inside cmd, poiwer shell or MSYS2 terminal:
+* ### Building
+  Run make in the project root with the makefile for your shell:
 
-           make -f Makefile
+      make -f make_files/Windows/MakefileWinMSYS           # MSYS2 UCRT64/CLANG64 shell, Vulkan from MSYS2
+      mingw32-make -f make_files/Windows/MakefileWin       # cmd.exe, MinGW g++ + Vulkan SDK
+      mingw32-make -f make_files/Windows/MakefileWinPS     # PowerShell, MinGW g++ + Vulkan SDK
+      mingw32-make -f make_files/Windows/MakefileWinClang  # cmd.exe, LLVM clang + Vulkan SDK
 
-       where "Makefile" - is a make file you choosen.
+  The result is `build\winGame.exe`; it must stay in `build\` (resources are looked up as `..\<dir>\`).
+
+* ### Cross-compiling from Linux
+
+      VULKAN_SDK=/path/to/VulkanSDK make -f MakefileMingw -j$(nproc)          # MinGW-w64 GCC
+      make -f MakefileWine LLVM_MINGW=/path/to/llvm-mingw -j$(nproc)          # llvm-mingw, run with: cd build && wine winGame.exe
+
+## Controls
+
+    W A S D     move
+    Space       jump
+    Mouse       look around (the cursor is captured after the first click into the window)
+    Left button shoot / drag items in the inventory
+    I           inventory
+    O           collision debug view
+    Esc         quit (closing the window works too)
+
+## Shaders
+
+Compiled SPIR-V shaders are in the repository. After editing a shader run `compile.sh` (needs `glslangValidator`)
+in its directory under `VKshaders/`.

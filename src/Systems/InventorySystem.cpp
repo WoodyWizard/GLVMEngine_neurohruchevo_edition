@@ -20,13 +20,18 @@ namespace GLVM::ecs
 		if ( isInventoryOpened ) {
 			namespace cm = GLVM::ecs::components;
 
+			/// Only one archetype of every kind is cached (capacity of each cache is 1)
 			crosshairArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( crosshairRequiredMask, &archView.crosshairCachedArchetype, crosshairArchetypesNumber );
+			arch::world.searchCacheArchetypes( crosshairRequiredMask, &archView.crosshairCachedArchetype, crosshairArchetypesNumber, 1 );
+			inventoryArchetypesNumber = 0;
+			arch::world.searchCacheArchetypes( inventoryRequiredMask, &archView.inventoryCachedArchetype, inventoryArchetypesNumber, 1 );
+			if ( crosshairArchetypesNumber == 0 || inventoryArchetypesNumber == 0 ||
+				 archView.crosshairCachedArchetype->entityCount == 0 || archView.inventoryCachedArchetype->entityCount == 0 ||
+				 isItemDraged == nullptr || isLeftMouseButtonReleased == nullptr )
+				return;
+
 			componentsView.crosshairTransformsView = (ecs::components::transform*)archView.crosshairCachedArchetype->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
-			
-			inventoryArchetypesNumber = 0;
-			arch::world.searchCacheArchetypes( inventoryRequiredMask, &archView.inventoryCachedArchetype, inventoryArchetypesNumber );
 
 			componentsView.inventoryTransformsView = (ecs::components::transform*)archView.inventoryCachedArchetype->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
@@ -52,16 +57,17 @@ namespace GLVM::ecs
 						point2D<int> intersectionSlot = determineActualIntersectionSlot( crosshairTransformComponent, inventoryTransformComponent, inventorySlotScale, inventorySlotHalfScale );
 						const unsigned int row    = intersectionSlot.y;
 						const unsigned int column = intersectionSlot.x;
-						const unsigned int entity = inventoryComponent->slots[row][column];
-						if( entity != UINT_MAX && entity >= 0 ) {  ///< Check slot is not empty and hold an item
-							arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( entity )];
+						const unsigned int entity = (row < inventoryComponent->row && column < inventoryComponent->col) ?
+							inventoryComponent->slots[row][column] : UINT_MAX;
+						if( entity != UINT_MAX && entity < arch::world.entityLocations.GetSize() ) {  ///< Check slot is not empty and hold an item
+							const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( entity )];
 							arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
 							const uint32_t itemIndex = itemLocation.index;
-							cm::item* itemComponent = &itemArch->items[itemIndex];
+							cm::item* itemComponent = itemArch ? &itemArch->items[itemIndex] : nullptr;
 
 							if( itemComponent != nullptr ) {
 								for( unsigned int i = 0; i < itemComponent->occupiedSlots.GetSize(); ++i ) {
-									unsigned int row_index = itemComponent->occupiedSlots[i] / inventoryComponent->row;
+									unsigned int row_index = itemComponent->occupiedSlots[i] / inventoryComponent->col;     ///< Slot index is row * col + column
 									unsigned int col_index = itemComponent->occupiedSlots[i] % inventoryComponent->col;
 
 									inventoryComponent->slots[row_index][col_index] = UINT_MAX;   ///< Need to free all slots that hold an item
@@ -78,11 +84,11 @@ namespace GLVM::ecs
 															  inventorySlotScale, inventorySlotHalfScale) ) {
 						[[maybe_unused]] point2D<int> intersectionSlot = determineActualIntersectionSlot( crosshairTransformComponent, inventoryTransformComponent, inventorySlotScale, inventorySlotHalfScale );
 
-						arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
+						const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
 						arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
 						const uint32_t itemIndex = itemLocation.index;
 						cm::item* itemComponent = &itemArch->items[itemIndex];
-					
+
 						core::vector<unsigned int> potentialOccupiedSlots;
 						int isSwapable = 0;
 						isSwapable = determineSwappableStatusAndSlots( itemComponent, inventoryTransformComponent, potentialOccupiedSlots, crosshairTransformComponent,
@@ -105,7 +111,7 @@ namespace GLVM::ecs
                     if ( isCrosshairInventoryIntersects ) {
 						[[maybe_unused]] point2D<int> intersectionSlot = determineActualIntersectionSlot( crosshairTransformComponent, inventoryTransformComponent, inventorySlotScale, inventorySlotHalfScale );
 
-						arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
+						const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
 						arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
 						const uint32_t itemIndex = itemLocation.index;
 						cm::item* itemComponent = &itemArch->items[itemIndex];
@@ -121,7 +127,7 @@ namespace GLVM::ecs
 							itemComponent->occupiedSlots = potentialOccupiedSlots;
 							fillInventorySlots( itemComponent, itemWidth, itemHeight, inventoryComponent, *isItemDraged );
 						} else if ( isSwapable > 0 ) {         ///< Swap one item that we draging to another one in inventory
-							arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( isSwapable )];
+							const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( isSwapable )];
 							arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
 							const uint32_t itemIndex = itemLocation.index;
 							cm::item* swapedItemComponent = &itemArch->items[itemIndex];
@@ -144,24 +150,29 @@ namespace GLVM::ecs
 							*isItemDraged = isSwapable;
 						}
                     } else { ///< Item drop to the ground
-						arch::EntityLocation itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
+						const arch::EntityLocation& itemLocation = arch::world.entityLocations[arch::getId( *isItemDraged )];
 						arch::ItemArchetype* itemArch = static_cast<arch::ItemArchetype*>(itemLocation.arch);
 						const uint32_t itemIndex = itemLocation.index;
 						itemArch->rigidBodies[itemIndex] = { .fMass_ = 2.0f };
 						cm::transform* itemTransform = &itemArch->transforms[itemIndex];
 						cm::item*      item          = &itemArch->items[itemIndex];
 						item->isActor = true;
-					
-						const uint32_t player = 0;                          ///< REMOVE THIS CRINGE
-						arch::EntityLocation playerLocation = arch::world.entityLocations[arch::getId( player )];
-						arch::PlayerArchetype* playerArch = static_cast<arch::PlayerArchetype*>(playerLocation.arch);
-						const uint32_t playerIndex = playerLocation.index;
-						cm::transform* playerTransform = &playerArch->transforms[playerIndex];
-						itemTransform->position = playerTransform->position;
-						vec3 normalizedForward = Normalize(playerTransform->forward);
-						itemTransform->position[0] += normalizedForward[0] * 1.5f;
-						itemTransform->position[1] += normalizedForward[1] * 1.5f;
-						itemTransform->position[2] += normalizedForward[2] * 1.5f;
+
+						/// Item is dropped in front of the inventory owner (player)
+						const arch::componentMask playerTagMask = (1ull << arch::ComponentsIndices::PLAYER_TAG_COMPONENT);
+						const uint32_t ownerId = inventoryComponent->entityOwner;
+						const arch::Archetype* ownerArch = ownerId < arch::world.entityLocations.GetSize() ?
+							arch::world.entityLocations[ownerId].arch : nullptr;
+						if ( ownerArch != nullptr && arch::matchesRequiredMask( ownerArch->mask, playerTagMask ) ) {
+							const arch::PlayerArchetype* playerArch = static_cast<const arch::PlayerArchetype*>(ownerArch);
+							const uint32_t playerIndex = arch::world.entityLocations[ownerId].index;
+							const cm::transform* playerTransform = &playerArch->transforms[playerIndex];
+							itemTransform->position = playerTransform->position;
+							vec3 normalizedForward = Normalize(playerTransform->forward);
+							itemTransform->position[0] += normalizedForward[0] * 1.5f;
+							itemTransform->position[1] += normalizedForward[1] * 1.5f;
+							itemTransform->position[2] += normalizedForward[2] * 1.5f;
+						}
 						itemTransform->scale = 0.05f;
 					
 						*isItemDraged = -1;

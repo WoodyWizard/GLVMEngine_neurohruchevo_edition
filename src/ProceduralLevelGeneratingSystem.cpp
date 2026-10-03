@@ -28,10 +28,13 @@ namespace GLVM::core
 		/// New arch ECS
 		arch::ArchetypeEntityManager* archEntityManager = arch::ArchetypeEntityManager::getInstance();
 
-		arch::world.searchCacheArchetypes( playerRequiredMask, &archView.cachedPlayerArch, cachedPlayerArchNumber );
-		componentsView.playerTransforms         = (ecs::components::transform*)archView.cachedPlayerArch->
-			components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
-		
+		/// Only one player archetype is cached (capacity of the cache is 1)
+		arch::world.searchCacheArchetypes( playerRequiredMask, &archView.cachedPlayerArch, cachedPlayerArchNumber, 1 );
+		if ( cachedPlayerArchNumber > 0 ) {
+			componentsView.playerTransforms         = (ecs::components::transform*)archView.cachedPlayerArch->
+				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
+		}
+
 		while ( levelNubmer < 5 ) {
 			core::vector<core::Vertex> nextLevel;
 			std::vector<uint32_t> indices;
@@ -75,23 +78,21 @@ namespace GLVM::core
 				arch::entity gameLevelChunkEntity = archEntityManager->createEntity();
 
 				cachedLevelChunkArchNumber = 0;
-				/// Search and cache one time for LevelChunkArch
-				arch::world.searchCacheArchetypes( requiredMask, &archView.cachedLevelChunkArch, cachedLevelChunkArchNumber );
-				
-				arch::world.addEntityToArchetype( gameLevelChunkEntity, archView.cachedLevelChunkArch );
-				arch::EntityLocation gameLevelChunkLocation = arch::world.entityLocations[arch::getId( gameLevelChunkEntity )];
-				
-				arch::LevelChunkArchetype* levelChunkArch = static_cast<arch::LevelChunkArchetype*>(gameLevelChunkLocation.arch);
-				const uint32_t gameLevelChunkIndex = gameLevelChunkLocation.index;
-				ecs::TextureHandle gameLevelTexture = textureHandlers[2];
-				if( levelNubmer == 0 ) {
-					/// Set up current level position to player position
-					// componentsView.playerTransforms->position =
-					// 	vec3( currentLevelPosition[0], componentsView.playerTransforms->position[1], currentLevelPosition[2] );
+				/// Search and cache one time for LevelChunkArch (capacity of the cache is 1)
+				arch::world.searchCacheArchetypes( requiredMask, &archView.cachedLevelChunkArch, cachedLevelChunkArchNumber, 1 );
+
+				const ecs::TextureHandle gameLevelTexture = textureHandlers.GetSize() > 2 ? textureHandlers[2] : ecs::TextureHandle{};
+				if ( cachedLevelChunkArchNumber > 0 && arch::world.addEntityToArchetype( gameLevelChunkEntity, archView.cachedLevelChunkArch ) ) {
+					const arch::EntityLocation& gameLevelChunkLocation = arch::world.entityLocations[arch::getId( gameLevelChunkEntity )];
+
+					arch::LevelChunkArchetype* levelChunkArch = static_cast<arch::LevelChunkArchetype*>(gameLevelChunkLocation.arch);
+					const uint32_t gameLevelChunkIndex = gameLevelChunkLocation.index;
+					levelChunkArch->transforms[gameLevelChunkIndex] = { .position = currentLevelPosition, .scale = 1.0f };
+					levelChunkArch->materials[gameLevelChunkIndex]  = { .diffuseTextureID_ = gameLevelTexture, .specularTextureID_ = gameLevelTexture, .ambient = { 0.05f, 0.05f, 0.5f }, .shininess = 128.0f * 0.078125f };
+					levelChunkArch->meshes[gameLevelChunkIndex].handle = gameLevelMeshHandle;
+				} else {
+					archEntityManager->removeEntity( gameLevelChunkEntity );
 				}
-				levelChunkArch->transforms[gameLevelChunkIndex] = { .position = currentLevelPosition, .scale = 1.0f };
-				levelChunkArch->materials[gameLevelChunkIndex]  = { .diffuseTextureID_ = gameLevelTexture, .specularTextureID_ = gameLevelTexture, .ambient = { 0.05f, 0.05f, 0.5f }, .shininess = 128.0f * 0.078125f };
-				levelChunkArch->meshes[gameLevelChunkIndex].handle = gameLevelMeshHandle;
 				
 				for ( unsigned int i = 0; i < 36; ++i )
 					transitionBridgeIndices.push_back(boxIndicesForIndexBuffer1[i]);
@@ -107,16 +108,18 @@ namespace GLVM::core
 
 				[[maybe_unused]] cm::MeshHandle transitionBridgeMeshHandle = GLVM->LoadMesh();
 				arch::entity transitionBridgeEntity = archEntityManager->createEntity();
-				arch::world.addEntityToArchetype( transitionBridgeEntity, archView.cachedLevelChunkArch );
+				if ( cachedLevelChunkArchNumber > 0 && arch::world.addEntityToArchetype( transitionBridgeEntity, archView.cachedLevelChunkArch ) ) {
+					const arch::EntityLocation& transitionBridgeLocation = arch::world.entityLocations[arch::getId( transitionBridgeEntity )];
 
-				arch::EntityLocation transitionBridgeLocation = arch::world.entityLocations[arch::getId( transitionBridgeEntity )];
-
-				arch::LevelChunkArchetype* transitionBridgeArch = static_cast<arch::LevelChunkArchetype*>(transitionBridgeLocation.arch);
-				const uint32_t transitionBridgeIndex = transitionBridgeLocation.index;
-				ecs::TextureHandle transitionBridgeTexture = textureHandlers[2];
-				transitionBridgeArch->transforms[transitionBridgeIndex] = { .position = transitionBridgePosition, .scale = 1.0f };
-				transitionBridgeArch->materials[transitionBridgeIndex]  = { .diffuseTextureID_ = transitionBridgeTexture, .specularTextureID_ = transitionBridgeTexture, .ambient = { 0.05f, 0.05f, 0.05f }, .shininess = 128.0f * 0.078125f };
-				transitionBridgeArch->meshes[transitionBridgeIndex].handle = transitionBridgeMeshHandle;
+					arch::LevelChunkArchetype* transitionBridgeArch = static_cast<arch::LevelChunkArchetype*>(transitionBridgeLocation.arch);
+					const uint32_t transitionBridgeIndex = transitionBridgeLocation.index;
+					const ecs::TextureHandle transitionBridgeTexture = textureHandlers.GetSize() > 2 ? textureHandlers[2] : ecs::TextureHandle{};
+					transitionBridgeArch->transforms[transitionBridgeIndex] = { .position = transitionBridgePosition, .scale = 1.0f };
+					transitionBridgeArch->materials[transitionBridgeIndex]  = { .diffuseTextureID_ = transitionBridgeTexture, .specularTextureID_ = transitionBridgeTexture, .ambient = { 0.05f, 0.05f, 0.05f }, .shininess = 128.0f * 0.078125f };
+					transitionBridgeArch->meshes[transitionBridgeIndex].handle = transitionBridgeMeshHandle;
+				} else {
+					archEntityManager->removeEntity( transitionBridgeEntity );
+				}
 				
 				++levelNubmer;
 			}

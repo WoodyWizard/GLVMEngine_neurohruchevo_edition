@@ -68,22 +68,24 @@ namespace GLVM::core
         static Engine*    pInstance_;
         static std::mutex  Mutex_;
         
-		Time::IChrono       * chrono;
-        Sound::ISoundEngine * soundEngine;
+		Time::IChrono       * chrono      = nullptr;
+        Sound::ISoundEngine * soundEngine = nullptr;
 		std::thread          sound_thread;
 		std::atomic<bool>    runningSound{ false };
-		float                deltaFrameTime;
-		float                gravity;
+		float                deltaFrameTime = 0.0f;
 //		CStack               Input_Stack_;
-		bool                 isLeftMouseButtonPressed;
+		bool                 isLeftMouseButtonPressed = false;
 		std::vector<ecs::Texture> textureVector;
 		std::vector<const char*> pathsArray_;
 		core::vector<const char*> pathsGLTF_;
 		uint32_t meshID = 0;
-		bool isAlreadyCached;
+		bool isAlreadyCached = false;
 		float hud_screen_x = 0.0f;
-		float previous_hud_screen_x = 0.0f;                     ///< TODO: No need to use it. Find another way
-		float hud_screen_y;
+		float hud_screen_y = 0.0f;
+		core::vector<mat4> identityJointMatrices;               ///< MAX_JOINTS_NUMBER identity matrices for not animated actors. Built once
+		float playerModelYawOffset = 0.0f;                      ///< Difference between rotation angle of player model and direction angle of its forward
+		bool  isPlayerModelYawOffsetInitialized = false;
+		unsigned int collisionWireframeMeshesNumber = 0;          ///< Number of meshes with created collision wireframe buffers
 		int                  dragedItemEntity = -1;             ///< If dont have any draged item then this variable have value of -1
 		[[maybe_unused]] float fYaw   = -90.0f;
         [[maybe_unused]] float fPitch = 0.0f;
@@ -94,23 +96,20 @@ namespace GLVM::core
 		[[maybe_unused]] float prev_X = 0.0f;
 		[[maybe_unused]] float current_X = 0.0f;
 
-		vec3 previousFrameForward = { 0.0, 0.0, -1.0 };
-		int previousFrameKeyEvents[4] = {};
-
-		CVulkanRenderer*     vulkanRenderer;
+		CVulkanRenderer*     vulkanRenderer = nullptr;
 
 //		ecs::CSystemManager* pSystem_Manager;
 
-		ecs::SpatialGridSystem          * spatialGridSystem;
-        ecs::CCollisionSystem           * collisionSystem;
-		ecs::CMovementSystem            * movementSystem;
-        ecs::CPhysicsSystem             * physicsSystem;
-        ecs::CProjectileSystem          * projectileSystem;
-		ecs::DamageSystem               * damageSystem;
-		ecs::EnemySystem                * enemySytem;
-		ecs::ItemSystem                 * itemSystem;
-		ProceduralLevelGeneratingSystem * procuduralLevelGeneratingSystem;
-		ecs::InventorySystem            * inventorySystem;
+		ecs::SpatialGridSystem          * spatialGridSystem               = nullptr;
+        ecs::CCollisionSystem           * collisionSystem                 = nullptr;
+		ecs::CMovementSystem            * movementSystem                  = nullptr;
+        ecs::CPhysicsSystem             * physicsSystem                   = nullptr;
+        ecs::CProjectileSystem          * projectileSystem                = nullptr;
+		ecs::DamageSystem               * damageSystem                    = nullptr;
+		ecs::EnemySystem                * enemySytem                      = nullptr;
+		ecs::ItemSystem                 * itemSystem                      = nullptr;
+		ProceduralLevelGeneratingSystem * procuduralLevelGeneratingSystem = nullptr;
+		ecs::InventorySystem            * inventorySystem                 = nullptr;
 
 		// struct PreinitializedRenderData {
 			
@@ -172,14 +171,6 @@ namespace GLVM::core
 		ecs::arch::componentMask mathObjectRequiredMask =
 			(1ul << ecs::arch::ComponentsIndices::MATH_OBJECT_COMPONENT);
 		
-		ecs::arch::Archetype* cachedAnimationArchetypes[32];
-		uint32_t animationArchetypesNumber = 0;
-		ecs::arch::componentMask animationRequiredMask =
-			(1ul << ecs::arch::ComponentsIndices::MATERIAL_COMPONENT)  |
-			(1ul << ecs::arch::ComponentsIndices::ANIMATION_COMPONENT) |
-			(1ul << ecs::arch::ComponentsIndices::ROTATION_COMPONENT)  |
-			(1ul << ecs::arch::ComponentsIndices::TRANSFORM_COMPONENT) |
-			(1ul << ecs::arch::ComponentsIndices::MESH_COMPONENT);
 
 		
 		ecs::arch::Archetype* cachedCrosshairActorsArchetypes[32];
@@ -277,10 +268,12 @@ namespace GLVM::core
 		void GameLoop();
 		void EventQueueFlush();
 		void RenderVulkan();
-		void EnlargeFrameAccumulator(float value);
 		void SetViewMatrix();
 		mat4 SetProjectionMatrix( const float fov, const float viewPortWidth, const float viewPortHeight, const float nearPlane, const float farPlane );
-		[[nodiscard]] core::vector<mat4> updateAnimationFrames(ecs::components::animation* animationComponent, unsigned int meshID);
+		float getViewportAspectRate() const;
+		void initializePlayerModelYawOffset( const ecs::components::transform& playerTransform );
+		/// Advance animation of the component by frame time and write joint matrices into animationComponent->jointMatrices
+		void updateAnimationFrames(ecs::components::animation* animationComponent, unsigned int meshID);
 		mat4 updateDirectionalLightSpaceMatrixShadowMapUBO(ecs::components::directionalLight* directionalLightComponent);
 		mat4 updateSpotLightSpaceMatrixShadowMapUBO( ecs::components::spotLight* spotLightComponent );
 		mat4 updatePointLightSpaceMatrixShadowMapUBO( ecs::components::pointLight* pointLightComponent, uint32_t layer );

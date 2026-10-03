@@ -1,38 +1,43 @@
-CXX = x86_64-w64-mingw32-gcc
-CC = x86_64-w64-mingw32-g++
-VULKAN_SDK = /home/vel_rax64/.wine/drive_c/VulkanSDK/1.3.290.0
-LDFLAGS = -I$(VULKAN_SDK)/Include -L$(VULKAN_SDK)/Lib -static-libgcc -static-libstdc++ -static -mconsole -lgdi32 -lwinmm -lvulkan-1
-CXXFLAGS = -c -std=c++20 -g -Wall -I$(VULKAN_SDK)/Include -O0 -mconsole
-CFLAGS = -c -g -Wall
-INC = -I./include
-TEX = -I./textures
-BUILD = build
-SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
-	  ./src/Event.cpp ./src/WinApi/ChronoWin.cpp ./src/TimerCreator.cpp \
-	  ./src/VertexData.cpp ./src/Systems/CollisionSystem.cpp ./src/Systems/AnimationSystem.cpp \
-	  ./src/Systems/PhysicsSystem.cpp ./src/ComponentManager.cpp ./src/EntityManager.cpp ./src/Systems/MovementSystem.cpp \
-	  ./src/SystemManager.cpp ./src/Systems/ProjectileSystem.cpp \
-	  ./src/WinApi/SoundEngineWaveform.cpp ./src/SoundEngineFactory.cpp ./src/GraphicAPI/Vulkan.cpp \
-	  ./src/TextureManager.cpp ./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
-	  ./src/WinApi/WindowWinVulkan.cpp \
-	  ./textures/chelik.cpp ./textures/witch.cpp ./textures/crosshair.cpp ./textures/gray.cpp \
-	  ./textures/container2.cpp ./textures/container2_specular.cpp \
-	  ./src/Systems/DamageSystem.cpp ./src/Systems/EnemySystem.cpp ./textures/fontAtlas.cpp ./textures/inventorySlot.cpp \
-	  ./src/Systems/ItemSystem.cpp
-OBJECTS = $(SOURCES:./src/%.cpp=$(BUILD)/%.o)
-EXECUTABLE = winGame
+# GLVM Windows build cross-compiled on Linux with MinGW-w64 GCC.
+#
+#   export VULKAN_SDK=/path/to/VulkanSDK/<version>     # must contain Include/ and Lib/ (vulkan-1 import library)
+#   make -f MakefileMingw -j$(nproc)                   # -> build/winGame.exe
+#
+# The executable must stay in build/: resources are looked up as ../<dir>/ relative to the executable.
 
-all: $(SOURCES) $(EXECUTABLE)
+CXX = x86_64-w64-mingw32-g++
 
-$(EXECUTABLE): $(OBJECTS)
-	$(CC) $(OBJECTS) -o $(BUILD)/$@ $(LDFLAGS)
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(strip $(VULKAN_SDK)),)
+$(error VULKAN_SDK is not set: export VULKAN_SDK=<Vulkan SDK directory with Include/ and Lib/>)
+endif
+endif
 
-$(BUILD)/%.o : ./src/%.cpp
-	mkdir -p $(@D)
-	$(CC) $(INC) $(TEX) $(CXXFLAGS) $< -o $@
+BUILD    = build
+OBJ_DIR  = $(BUILD)/obj-mingw
+CPPFLAGS = -I./include -I./textures -I$(VULKAN_SDK)/Include -MMD -MP
+CXXFLAGS = -std=c++20 -O2 -g -Wall -Wextra -mconsole
+LDFLAGS  = -L$(VULKAN_SDK)/Lib -static-libgcc -static-libstdc++ -static -mconsole
+LDLIBS   = -lvulkan-1 -lgdi32 -luser32 -lwinmm
 
-$(BUILD)/%.o : %.c
-	$(C) $(INC) $(TEX) $(CFLAGS) $< -o $@
+include make_files/sources.mk
+
+SOURCES = $(GLVM_COMMON_SOURCES) $(GLVM_WINDOWS_SOURCES) $(GLVM_TEXTURE_SOURCES)
+OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
+TARGET  = $(BUILD)/winGame.exe
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CXX) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
+
+$(OBJ_DIR)/%.o: ./%.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BUILD)/*
+	rm -rf $(OBJ_DIR) $(TARGET)
+
+-include $(OBJECTS:.o=.d)

@@ -25,11 +25,34 @@
 #include "Components/StateComponent.hpp"
 #include "Components/MoveComponent.hpp"
 #include "TagComponents/ProjectileTagComponent.hpp"
+#include "TagComponents/CrosshairTagComponent.hpp"
+#include "TagComponents/StaticMeshTagComponent.hpp"
+#include "TagComponents/MathObjectComponent.hpp"
+#include "Components/RotationComponent.hpp"
+#include "Components/MeshGenerationComponent.hpp"
+#include <climits>
+#include <iostream>
+#include <utility>
 
 namespace GLVM::ecs::arch {
+	namespace {
+		/// Move component of the last entity into the slot of removed one.
+		template< typename T >
+		void moveComponent( void* componentArray, const uint32_t index, const uint32_t last ) {
+			T* typedArray = static_cast<T*>( componentArray );
+			typedArray[index] = std::move( typedArray[last] );
+		}
+	}
+
+	/// Returns UINT32_MAX if entities array is full. Note that real capacity of derived archetypes
+	/// (size of their component arrays) is checked by World::addEntityToArchetype.
 	uint32_t Archetype::addEntity( entity entity_ ) {
+		if ( entityCount >= CAPACITY ) {
+			std::cerr << "Archetype::addEntity: entities array is full" << std::endl;
+			return UINT32_MAX;
+		}
+
 		uint32_t index = entityCount++;
-		assert( index < CAPACITY );
 		entities[index] = entity_;
 		
 		return index;
@@ -37,83 +60,107 @@ namespace GLVM::ecs::arch {
 	
 	/// Swap-remove
 	entity Archetype::removeEntity( uint32_t index ) {
+		assert( entityCount > 0 && index < entityCount );
 		uint32_t last = entityCount - 1;
 
-		for( uint32_t i = 0; i < componentCount; ++i ) {
-			const uint32_t componentId = componentIds[i];
+		static_assert( ComponentsIndices::COMPONENTS_COUNT == 29, "New component type must be handled in Archetype::removeEntity" );
 
-			switch( componentId ) {
-			case ComponentsIndices::TRANSFORM_COMPONENT:
-				static_cast<components::transform*>(components[componentId])[index] = static_cast<components::transform*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::RIGID_BODY_COMPONENT:
-				static_cast<components::rigidBody*>(components[componentId])[index] = static_cast<components::rigidBody*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::MESH_COMPONENT:
-				static_cast<components::mesh*>(components[componentId])[index] = static_cast<components::mesh*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::FONT_COMPONENT:
-				static_cast<components::font*>(components[componentId])[index] = static_cast<components::font*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::COLLIDER_COMPONENT:
-				static_cast<components::collider*>(components[componentId])[index] = static_cast<components::collider*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::COLLIDER_FLAGS_COMPONENT:
-				static_cast<components::colliderFlags*>(components[componentId])[index] = static_cast<components::colliderFlags*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::MATERIAL_COMPONENT:
-				static_cast<components::material*>(components[componentId])[index] = static_cast<components::material*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::VIEW_COMPONENT:
-				static_cast<components::beholder*>(components[componentId])[index] = static_cast<components::beholder*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::HEALTH_COMPONENT:
-				static_cast<components::health*>(components[componentId])[index] = static_cast<components::health*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::ANIMATION_COMPONENT:
-				static_cast<components::animation*>(components[componentId])[index] = static_cast<components::animation*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::STATE_COMPONENT:
-				static_cast<components::state*>(components[componentId])[index] = static_cast<components::state*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::ENEMY_COMPONENT:
-				static_cast<components::enemy*>(components[componentId])[index] = static_cast<components::enemy*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::DAMAGE_COMPONENT:
-				static_cast<components::damage*>(components[componentId])[index] = static_cast<components::damage*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::ATTACK_COMPONENT:
-				static_cast<components::attack*>(components[componentId])[index] = static_cast<components::attack*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::INVENTORY_COMPONENT:
-				static_cast<components::inventory*>(components[componentId])[index] = static_cast<components::inventory*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::DIRECTIONAL_LIGHT_COMPONENT:
-				static_cast<components::directionalLight*>(components[componentId])[index] = static_cast<components::directionalLight*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::SPOT_LIGHT_COMPONENT:
-				static_cast<components::spotLight*>(components[componentId])[index] = static_cast<components::spotLight*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::POINT_LIGHT_COMPONENT:
-				static_cast<components::pointLight*>(components[componentId])[index] = static_cast<components::pointLight*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::ITEM_COMPONENT:
-				static_cast<components::item*>(components[componentId])[index] = static_cast<components::item*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::MOVE_COMPONENT:
-				static_cast<components::move*>(components[componentId])[index] = static_cast<components::move*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::PROJECTILE_BUNDLE_COMPONENT:
-				static_cast<ProjectileBundle*>(components[componentId])[index] = static_cast<ProjectileBundle*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::LEVEL_CHUNK_TAG_COMPONENT:
-				static_cast<tagComponents::levelChunkTagComponent*>(components[componentId])[index] = static_cast<tagComponents::levelChunkTagComponent*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::PROJECTILE_TAG_COMPONENT:
-				static_cast<tagComponents::projectileTagComponent*>(components[componentId])[index] = static_cast<tagComponents::projectileTagComponent*>(components[componentId])[last];
-				break;
-			case ComponentsIndices::PLAYER_TAG_COMPONENT:
-				static_cast<tagComponents::playerTagComponent*>(components[componentId])[index] = static_cast<tagComponents::playerTagComponent*>(components[componentId])[last];
+		if ( index != last ) {
+			for( uint32_t i = 0; i < componentCount; ++i ) {
+				const uint32_t componentId = componentIds[i];
+
+				switch( componentId ) {
+				case ComponentsIndices::TRANSFORM_COMPONENT:
+					moveComponent<components::transform>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::RIGID_BODY_COMPONENT:
+					moveComponent<components::rigidBody>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::MESH_COMPONENT:
+					moveComponent<components::mesh>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::FONT_COMPONENT:
+					moveComponent<components::font>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::COLLIDER_COMPONENT:
+					moveComponent<components::collider>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::COLLIDER_FLAGS_COMPONENT:
+					moveComponent<components::colliderFlags>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::MATERIAL_COMPONENT:
+					moveComponent<components::material>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::VIEW_COMPONENT:
+					moveComponent<components::beholder>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::HEALTH_COMPONENT:
+					moveComponent<components::health>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::ANIMATION_COMPONENT:
+					moveComponent<components::animation>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::STATE_COMPONENT:
+					moveComponent<components::state>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::ENEMY_COMPONENT:
+					moveComponent<components::enemy>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::DAMAGE_COMPONENT:
+					moveComponent<components::damage>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::ATTACK_COMPONENT:
+					moveComponent<components::attack>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::INVENTORY_COMPONENT:
+					moveComponent<components::inventory>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::DIRECTIONAL_LIGHT_COMPONENT:
+					moveComponent<components::directionalLight>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::SPOT_LIGHT_COMPONENT:
+					moveComponent<components::spotLight>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::POINT_LIGHT_COMPONENT:
+					moveComponent<components::pointLight>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::ITEM_COMPONENT:
+					moveComponent<components::item>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::MOVE_COMPONENT:
+					moveComponent<components::move>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::PROJECTILE_BUNDLE_COMPONENT:
+					moveComponent<ProjectileBundle>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::ROTATION_COMPONENT:
+					moveComponent<components::rotation>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::MESH_GENERATION_COMPONENT:
+					moveComponent<components::meshGeneration>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::LEVEL_CHUNK_TAG_COMPONENT:
+					moveComponent<tagComponents::levelChunkTagComponent>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::PLAYER_TAG_COMPONENT:
+					moveComponent<tagComponents::playerTagComponent>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::CROSSHAIR_TAG_COMPONENT:
+					moveComponent<tagComponents::crossHairTagComponent>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::STATIC_MESH_TAG_COMPONENT:
+					moveComponent<tagComponents::staticMeshTagComponent>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::PROJECTILE_TAG_COMPONENT:
+					moveComponent<tagComponents::projectileTagComponent>( components[componentId], index, last );
+					break;
+				case ComponentsIndices::MATH_OBJECT_COMPONENT:
+					moveComponent<tagComponents::mathObjectTagComponent>( components[componentId], index, last );
+					break;
+				default:
+					std::cerr << "Archetype::removeEntity: unknown component id " << componentId << std::endl;
+					break;
+				}
 			}
 		}
 		

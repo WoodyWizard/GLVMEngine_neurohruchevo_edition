@@ -31,6 +31,8 @@ namespace GLVM::core::Sound
         virtual void SetMasterVolume(long _lVolume) = 0;
         virtual void SoundStream() = 0;
 		virtual void CreateSoundSample( const char* filePath, u32 duration, u32 rate, float volume ) = 0;
+		/// Wake up the thread blocked in SoundStream() and make it return. Used on shutdown before join of the sound thread.
+		virtual void StopStream() {}
     };
 }
 

@@ -58,6 +58,7 @@
 #include <thread>
 //#include <wayland-client-core.h>
 #include <fstream>
+#include <filesystem>
 
 
 /*******************************************************************
@@ -109,8 +110,8 @@ namespace GLVM::core
     Engine* Engine::pInstance_ = nullptr;
     std::mutex Engine::Mutex_;
 
+	/// Sound thread. SoundStream() sleeps until there is a sound to play or StopStream() is called.
     void PlaybackSound(Sound::ISoundEngine* _sound_Engine, std::atomic<bool>& runningSound) {
-		runningSound = true;
         while( runningSound ) {
 			_sound_Engine->SoundStream();
 		}
@@ -123,7 +124,7 @@ namespace GLVM::core
 		spatialGridSystem               = new ecs::SpatialGridSystem();
 		collisionSystem                 = new ecs::CCollisionSystem(Input_Stack_);
 		movementSystem                  = new ecs::CMovementSystem(Input_Stack_);
-		physicsSystem                   = new ecs::CPhysicsSystem(gravity, Input_Stack_);
+		physicsSystem                   = new ecs::CPhysicsSystem(Input_Stack_);
 		projectileSystem                = new ecs::CProjectileSystem(Input_Stack_);
 		damageSystem                    = new ecs::DamageSystem();
 		enemySytem                      = new ecs::EnemySystem();
@@ -148,11 +149,18 @@ namespace GLVM::core
 		pSystem_Manager->ActivateSystem(inventorySystem);
 		pSystem_Manager->ActivateSystem(itemSystem);
 
-		sound_thread = std::thread(PlaybackSound, std::ref(soundEngine), std::ref(runningSound));
+		/// Device is opened before the sound thread starts, running flag is set before the thread starts too
 		soundEngine->OpenDevice( "default" );
+		runningSound = true;
+		sound_thread = std::thread(PlaybackSound, soundEngine, std::ref(runningSound));
     }
-	
-    Engine::~Engine() {}
+
+    Engine::~Engine() {
+		/// GameKill is idempotent: it stops the sound thread (a joinable std::thread must not be destroyed) and frees systems
+		GameKill();
+		if ( pInstance_ == this )
+			pInstance_ = nullptr;
+	}
             
     Engine* Engine::GetInstance() {
 		std::lock_guard<std::mutex> lock(Mutex_);
@@ -186,6 +194,11 @@ namespace GLVM::core
 
 		inventorySystem->isItemDraged     = &dragedItemEntity;
 		itemSystem->dragedItemEntity      = &dragedItemEntity;
+
+		/// Joint matrices of all not animated actors. Built once instead of every frame.
+		identityJointMatrices.Resize(MAX_JOINTS_NUMBER);
+		for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i )
+			identityJointMatrices[i] = mat4(1.0f);
 
 		vulkanRenderer = new CVulkanRenderer();
 		vulkanRenderer->initializeTextureData_ = textureVector;
@@ -250,10 +263,16 @@ namespace GLVM::core
 		// }
 #endif
 
+		/*
+		  Frame time is limited: after a stall (loading, hidden window, debugger) a huge step would make
+		  objects pass through walls. First frame does not include loading time because the timer is reset here.
+		*/
+		constexpr float maxFrameTime = 0.1f;
+		chrono->Reset();
+
 		while(bGame_Loop_Active) {
-			deltaFrameTime = chrono->GetElapsed();
+			deltaFrameTime = std::min( static_cast<float>(chrono->GetElapsed()), maxFrameTime );
 			chrono->Reset();
-		    gravity += deltaFrameTime;
 
 			vulkanRenderer->Window->ClearDisplay();
 			g_eEvent.SetEvent(EEvents::eDEFAULT);
@@ -300,9 +319,7 @@ namespace GLVM::core
 			FPScounter();
 			damageSystem->deltaTime                   = deltaFrameTime;
 			movementSystem->deltaFrameTime            = deltaFrameTime;
-			movementSystem->gravity                   = gravity;
 			collisionSystem->fDelta_Time_             = deltaFrameTime;
-			collisionSystem->gravity                  = gravity;
 			collisionSystem->isInventoryOpened        = vulkanRenderer->isInventoryOpened;
 //			collisionSystem->isItemDraged             = &itemSystem->isItemDraged;
 			collisionSystem->isLeftMouseButtonPressed = isLeftMouseButtonPressed;
@@ -313,9 +330,8 @@ namespace GLVM::core
 			projectileSystem->soundEngine             = soundEngine;
 			projectileSystem->isInventoryOpened       = vulkanRenderer->isInventoryOpened;
 			physicsSystem->fDelta_Time_               = deltaFrameTime;
-			physicsSystem->fAcceleration_of_Gravity_ += (deltaFrameTime / 20);
-			physicsSystem->gravity                    = gravity;
 			inventorySystem->isInventoryOpened         = vulkanRenderer->isInventoryOpened;
+			inventorySystem->aspectRate                = getViewportAspectRate();
 			inventorySystem->isLeftMouseButtonReleased = &g_eEvent.isLeftMouseButtonReleased;
 			inventorySystem->isLeftMouseButtonPressed  = isLeftMouseButtonPressed;
 			inventorySystem->mouseOffsetX              = hud_screen_x;
@@ -326,7 +342,6 @@ namespace GLVM::core
 			itemSystem->isLeftMouseButtonPressed      = isLeftMouseButtonPressed;
 			itemSystem->mouseOffsetX                  = hud_screen_x;
 			itemSystem->mouseOffsetY                  = hud_screen_y;
-			EnlargeFrameAccumulator(deltaFrameTime);
 			pSystem_Manager->Update();
 			vulkanRenderer->levelGeneratedVertices    = procuduralLevelGeneratingSystem->levelGeneratedVertices;
 			vulkanRenderer->levelGeneratedIndices     = procuduralLevelGeneratingSystem->levelGeneratedIndices;
@@ -337,17 +352,21 @@ namespace GLVM::core
 			vulkanRenderer->hud_screen_y              = hud_screen_y;
 			vulkanRenderer->initializeGameLevelVertices();
 //			Input_Stack_.PrintStack();
-			if( !vulkanRenderer->isCollisionsWireframeBuffersInitialized ) {
+			/// Wireframe buffers are created per mesh, so they are (re)initialized only when new meshes appear
+			if( !vulkanRenderer->isCollisionsWireframeBuffersInitialized ||
+				collisionWireframeMeshesNumber != allMeshMaxAbsoluteValues.GetSize() ) {
 				vulkanRenderer->initializeCollisionWireframesBuffers();
+				collisionWireframeMeshesNumber = allMeshMaxAbsoluteValues.GetSize();
 			}
 			
 			if( !vulkanRenderer->isInventoryOpened ) {
 				SetViewMatrix();
-				vulkanRenderer->projectionMatrix = SetProjectionMatrix( 90.0f, 1920.0f, 1080.0f, 0.1f, 100.0f );
-				
-				const mat4 vp = vulkanRenderer->viewMatrix * vulkanRenderer->projectionMatrix;
-				vulkanRenderer->mainCameraFrustum = extractFrustum( vp );
 			}
+
+			/// Projection follows aspect rate of the swapchain (renderer updates it when the window is resized)
+			vulkanRenderer->projectionMatrix = SetProjectionMatrix( 90.0f, getViewportAspectRate(), 1.0f, 0.1f, 100.0f );
+			const mat4 vp = vulkanRenderer->viewMatrix * vulkanRenderer->projectionMatrix;
+			vulkanRenderer->mainCameraFrustum = extractFrustum( vp );
 			initializeAABB();
 			setFrameData();
 			vulkanRenderer->draw();
@@ -358,46 +377,34 @@ namespace GLVM::core
 		delete vulkanRenderer;
 	}
 
-	void Engine::EnlargeFrameAccumulator(float value) {
-		namespace cm   = GLVM::ecs::components;
-		namespace arch = GLVM::ecs::arch;
-		animationArchetypesNumber = 0;
-		for( uint32_t m = 0; m < arch::world.archetypes.GetSize(); ++m ) {
-			arch::Archetype* arch = arch::world.archetypes[m];
-			arch::componentMask requiredMask = (1ul << arch::ComponentsIndices::MESH_COMPONENT) |
-				(1ul << arch::ComponentsIndices::ANIMATION_COMPONENT);
-
-			if( arch::matchesRequiredMask( arch->mask, requiredMask ) ) {
-				cachedAnimationArchetypes[animationArchetypesNumber] = arch;
-				++animationArchetypesNumber;
-			}
+	namespace {
+		/*
+		  Angle of a direction on XZ plane. Direction (-sin(angle), 0, -cos(angle)) has angle "angle". It is the same
+		  parametrization as the orbit camera yaw: forward of the camera that looks at the player has angle equal to camera yaw.
+		*/
+		float directionAngleXZ( const vec3& direction ) {
+			return std::atan2( -direction[0], -direction[2] );
 		}
+	}
 
-		for( uint32_t n = 0; n < animationArchetypesNumber; ++n ) {
-			arch::Archetype* arch = cachedAnimationArchetypes[n];
-			cm::animation* animationView  = nullptr;
-			cm::mesh*      meshView       = nullptr;
-			if( arch != nullptr ) {
-				switch( arch->mask ) {
-				case arch::enemyComponentMask:
-					animationView   = static_cast<arch::EnemyArchetype*>( arch )->animations;
-					meshView        = static_cast<arch::EnemyArchetype*>( arch )->meshes;
-					break;
-				case arch::playerComponentMask:
-					animationView   = static_cast<arch::PlayerArchetype*>( arch )->animations;
-					meshView        = static_cast<arch::PlayerArchetype*>( arch )->meshes;
-					break;
-				}
-		
-				for(unsigned int i = 0; i < cachedAnimationArchetypes[n]->entityCount; ++i) {
-					if( &meshView[i] != nullptr && &animationView[i] != nullptr ) {
-						unsigned int mesh_id = meshView[i].handle.id;
-						if ( vulkanRenderer->jointMatricesPerMesh.GetSize() > 0 && vulkanRenderer->jointMatricesPerMesh[mesh_id].GetSize() > 0 )
-							animationView[i].frameAccumulator += value;
-					}
-				}
-			}
-		}
+	/// Player model rotation (transform pitch) = playerModelYawOffset + angle of model forward direction on XZ plane.
+	/// Offset is taken from the initial state of the player, so the start orientation of the model is kept.
+	void Engine::initializePlayerModelYawOffset( const ecs::components::transform& playerTransform ) {
+		if ( isPlayerModelYawOffsetInitialized )
+			return;
+
+		playerModelYawOffset = playerTransform.pitch - directionAngleXZ( playerTransform.previousFrameForward );
+		isPlayerModelYawOffsetInitialized = true;
+	}
+
+	/// Aspect rate of the swapchain. Renderer updates it when the swapchain is recreated (window resize).
+	float Engine::getViewportAspectRate() const {
+		constexpr float defaultAspectRate = 1920.0f / 1080.0f;
+		if ( vulkanRenderer == nullptr )
+			return defaultAspectRate;
+
+		const float aspectRate = vulkanRenderer->aspectRate;
+		return ( std::isfinite( aspectRate ) && aspectRate > 0.0f ) ? aspectRate : defaultAspectRate;
 	}
 
     void Engine::SetViewMatrix()
@@ -422,139 +429,51 @@ namespace GLVM::core
 				Matrix<float, 4> viewMatrix_(1.0f);
 				const float kSensitivity = 0.1f;
 
-				// if ( hud_screen_x > 1.0f )
-				// 	hud_screen_x = 1.0f;
-				// else if ( hud_screen_x < -1.0f )
-				// 	hud_screen_x = -1.0f;
-		
-				// if ( hud_screen_y > 1.0f )
-				// 	hud_screen_y = 1.0f;
-				// else if ( hud_screen_y < -1.0f )
-				// 	hud_screen_y = -1.0f;
-		
-				fYaw = g_eEvent.mousePointerPosition.offset_X;
-				fPitch = g_eEvent.mousePointerPosition.offset_Y;
-				fYaw *= kSensitivity;
-				fPitch *= kSensitivity;
+				/// Mouse offsets are the mouse movement (pixels) of the current frame
+				const float mouseOffsetX = static_cast<float>(g_eEvent.mousePointerPosition.offset_X);
+				const float mouseOffsetY = static_cast<float>(g_eEvent.mousePointerPosition.offset_Y);
 
+				fYaw   = mouseOffsetX * kSensitivity;
+				fPitch = mouseOffsetY * kSensitivity;
 				g_eEvent.mousePointerPosition.pitch = fPitch;
-				g_eEvent.mousePointerPosition.yaw = fYaw;
+				g_eEvent.mousePointerPosition.yaw   = fYaw;
 
-				vulkanRenderer->current_X = (float)g_eEvent.mousePointerPosition.offset_X;
-				vulkanRenderer->current_Y = (float)g_eEvent.mousePointerPosition.offset_Y;
-				float delta_x = 0.0f;
-				float delta_y = 0.0f;
-#ifdef VK_USE_PLATFORM_WAYLAND_KHR
-				delta_x = vulkanRenderer->current_X;
-				delta_y = -vulkanRenderer->current_Y;
-#else
-				delta_x = vulkanRenderer->current_X;
-				delta_y = -vulkanRenderer->current_Y;
-#endif
-				// delta_x *= kSensitivity;
-				// delta_y *= kSensitivity;
-		
-//				const vec3 rightVec = Cross( cameraComponent->forward, vec3( 0.0f, -1.0f, 0.0) );
-//				[[maybe_unused]] const vec3 newUpVec = Cross( rightVec, cameraComponent->forward );
-//				std::cout << "camera position: " << cameraComponent->Position << std::endl;
-				const vec3 rightVec = Normalize(Cross( cameraComponent->Position, vec3( 0.0f, -1.0f, 0.0)));
-				[[maybe_unused]] const vec3 newUpVec = Normalize(Cross( rightVec, cameraComponent->Position ));
+				vulkanRenderer->current_X = mouseOffsetX;
+				vulkanRenderer->current_Y = mouseOffsetY;
 
 				/*
-				 * 1. The mouse direction determines the "intended direction of rotation" for the object.
-				 * 2. The camera is "looking forward."
-				 * 3. To make the object "rotate as if the mouse is pushing it," you need to rotate it around an axis that is perpendicular to both the view direction and the mouse movement.
-				 */
-//				const vec3 rotateAxis = Normalize(Cross(cameraComponent->forward, rightVec * delta_x + newUpVec * delta_y));
-//				const vec3 rotateAxis = Normalize(vec3( 0.0, 1.0, 0.0 ));
-				const vec3 rotateAxis = Normalize(Cross(cameraComponent->Position, rightVec * delta_x + newUpVec * delta_y));
-//				_Player->pitch = 0;
-				if ( VecLength(rotateAxis) >= 0.001f ) {
-					/// A vector in the screen's tangent plane: it indicates the direction in which the mouse moved, but expressed in world (or 3D) space.
-					float rotationAngle = sqrt(delta_y * delta_y + delta_x * delta_x);
-					constexpr float angleScale = 0.1f;                                                                                     
-					rotationAngle = Radians(rotationAngle * angleScale);
-					constexpr float quatAngleCorrection = 0.5f;                                                                                 /// Quaternions need devision by 2
-					[[maybe_unused]] const float sinRotationAngle = sinf(rotationAngle * quatAngleCorrection);
-//					_Player->pitch += delta_x * 0.05f;
-					// const Quaternion rotationQuat = Quaternion(cosf(rotationAngle * quatAngleCorrection), sinRotationAngle * rotateAxis[0],
-					// 									 sinRotationAngle * rotateAxis[1], sinRotationAngle * rotateAxis[2]);
-					// // const Quaternion appliedRotationQuat = multiplyQuaternion(multiplyQuaternion(rotationQuat, Quaternion(0.0f, cameraComponent.forward[0],
-					// // 																								cameraComponent.forward[1], cameraComponent.forward[2])),
-					// // 													conjugate(rotationQuat));
-
-					// const Quaternion appliedRotationQuat = (rotationQuat * Quaternion(0.0f, cameraComponent.forward[0], cameraComponent.forward[1],
-					// 																  cameraComponent.forward[2])) * conjugate(rotationQuat);
-
-			
-					// forward[0] = appliedRotationQuat.x;
-					// forward[1] = appliedRotationQuat.y;
-					// forward[2] = appliedRotationQuat.z;
-					pga::point appliedRotationPoint = exp(rotationAngle * quatAngleCorrection, pga::rline{ .rx = -rotateAxis.x,
-							.ry = -rotateAxis.y, .rz = -rotateAxis.z}) >> pga::point{ .x = cameraComponent->Position[0],
-							.y = cameraComponent->Position[1], .z = cameraComponent->Position[2], .w = 1.0f };
-					// vulkanRenderer->forward[0] = appliedRotationPoint.x;
-					// vulkanRenderer->forward[1] = appliedRotationPoint.y;
-					// vulkanRenderer->forward[2] = appliedRotationPoint.z;
-
-					cameraComponent->Position[0] = appliedRotationPoint.x;
-					cameraComponent->Position[1] = appliedRotationPoint.y;
-					cameraComponent->Position[2] = appliedRotationPoint.z;
-
-					// if( abs(_Player->frameMovement[0]) > 0.0 ||
-					// 	abs(_Player->frameMovement[2]) > 0.0 ) {
-					// 	previousFrameForward = _Player->forward;
-					// }
-
-					cameraComponent->forward = Normalize(-cameraComponent->Position);
-					
-					if( (abs(_Player->frameMovement[0]) == 0.0 &&
-						 abs(_Player->frameMovement[2]) == 0.0) &&
-						(previousFrameKeyEvents[0] == 0 &&
-						 previousFrameKeyEvents[1] == 0 &&
-						 previousFrameKeyEvents[2] == 0 &&
-						 previousFrameKeyEvents[3] == 0)) {
-						_Player->forward = cameraComponent->forward;
-//						std::cout << _Player->forward << std::endl;
-						// float sign = -1.0f;
-						// if( delta_x >= 0.0f ) {
-						// 	sign = 1.0f;
-						// }
-
-						const vec2 tempFrameMovement = vec2(_Player->previousFrameForward[0],_Player->previousFrameForward[2]);
-						float sign = cross<float>(vec2(tempFrameMovement[0], tempFrameMovement[1]),
-										   vec2(cameraComponent->forward[0], cameraComponent->forward[2]));
-
-//						std::cout << "sign: " << sign << std::endl;
-						if( sign > 0.0f ) {
-							sign = 1.0f;
-						} else if( sign < 0.0f ) {
-							sign = -1.0f;
-						} else {
-							sign = 1.0f;
-						}
-						
-						// _Player->pitch += acos(clamp(-1.0f, Dot(Normalize(vec3(previousFrameForward[0], 0.0, previousFrameForward[2])),
-						// 									   Normalize(vec3(cameraComponent->forward[0], 0.0, cameraComponent->forward[2]))), 1.0f)) * sign;
-						// previousFrameForward = Normalize(vec3(cameraComponent->forward[0], 0.0, cameraComponent->forward[2]));
-
-						_Player->pitch -= acos(clamp(-1.0f, Dot(Normalize(vec3(_Player->previousFrameForward[0], 0.0, _Player->previousFrameForward[2])),
-																Normalize(vec3(cameraComponent->forward[0], 0.0, cameraComponent->forward[2]))), 1.0f)) * sign;
-						_Player->previousFrameForward = Normalize(vec3(cameraComponent->forward[0], 0.0, cameraComponent->forward[2]));
-					}
+				  Orbit camera around the player. Yaw rotates the camera around the world vertical axis, pitch is
+				  limited by kOrbitCameraMaxPitch, so the camera never reaches the poles where look-at basis with
+				  up vector (0, -1, 0) degenerates. Position is computed from the angles, so its length does not drift.
+				*/
+				const bool isFirstCameraUpdate = !cameraComponent->isOrbitInitialized;
+				if ( isFirstCameraUpdate ) {
+					if ( cameraComponent->orbitRadius <= 0.0f )
+						cameraComponent->orbitRadius = VecLength( cameraComponent->Position );
+					if ( !(cameraComponent->orbitRadius > 0.0f) )
+						cameraComponent->orbitRadius = 1.0f;
+					cameraComponent->isOrbitInitialized = true;
 				}
-				// vulkanRenderer->forward[0] = _Player->position[0];
-				// vulkanRenderer->forward[1] = _Player->position[1];
-				// vulkanRenderer->forward[2] = _Player->position[2];
-				
-				// cameraComponent->Position[0] = appliedRotationPoint.x;
-				// cameraComponent->Position[1] = appliedRotationPoint.y;
-				// cameraComponent->Position[2] = appliedRotationPoint.z;
-				// cameraComponent->forward = Normalize(cameraComponent->Position - _Player->position);
-				// _Player->forward = cameraComponent->forward;
-				// std::cout << "camera position: " << cameraComponent->Position << std::endl;
-				// std::cout << "player position: " << _Player->position << std::endl;
-				// std::cout << "player address: " << &_Player->position << std::endl;
+
+				const bool isMouseMoved = mouseOffsetX != 0.0f || mouseOffsetY != 0.0f;
+				constexpr float fullTurn = 2.0f * 3.14159265f;
+				cameraComponent->yaw   = std::remainder( cameraComponent->yaw + mouseOffsetX * cm::kOrbitCameraSensitivity, fullTurn );
+				cameraComponent->pitch = std::clamp( cameraComponent->pitch + mouseOffsetY * cm::kOrbitCameraSensitivity,
+													 -cm::kOrbitCameraMaxPitch, cm::kOrbitCameraMaxPitch );
+
+				const float cosPitch = std::cos( cameraComponent->pitch );
+				cameraComponent->Position = vec3( cosPitch * std::sin( cameraComponent->yaw ),
+												  std::sin( cameraComponent->pitch ),
+												  cosPitch * std::cos( cameraComponent->yaw ) ) * cameraComponent->orbitRadius;
+				cameraComponent->forward  = Normalize( -cameraComponent->Position );
+
+				/// While the player stands still, his model turns together with the camera (by camera yaw)
+				if ( (isMouseMoved || isFirstCameraUpdate) && _Player->frameMovement[0] == 0.0f && _Player->frameMovement[2] == 0.0f ) {
+					initializePlayerModelYawOffset( *_Player );
+					_Player->forward              = cameraComponent->forward;
+					_Player->pitch                = playerModelYawOffset + cameraComponent->yaw;
+					_Player->previousFrameForward = Normalize( vec3( cameraComponent->forward[0], 0.0f, cameraComponent->forward[2] ) );
+				}
 				mat4 view = LookAtMain( cameraComponent->Position + _Player->position,
 										cameraComponent->Position + _Player->position + cameraComponent->forward,
 //										_Player->position,
@@ -580,61 +499,66 @@ namespace GLVM::core
 //		vulkanRenderer->projectionMatrix[1][1] *= 1.0f;
 	}
 	
-	[[nodiscard]] core::vector<mat4> Engine::updateAnimationFrames([[maybe_unused]] ecs::components::animation* animationComponent, [[maybe_unused]] unsigned int meshID) {
-		if ( vulkanRenderer->jointMatricesPerMesh.GetSize() > 0 && vulkanRenderer->jointMatricesPerMesh[meshID].GetSize() > 0 &&
-			 animationComponent->frameAccumulator >= vulkanRenderer->frames[meshID][animationComponent->currentAnimationFrame] * 1.0f ) {
-			++animationComponent->currentAnimationFrame;
-			if ( vulkanRenderer->jointMatricesPerMesh[meshID].GetSize() > 0 && animationComponent->currentAnimationFrame == vulkanRenderer->frames[meshID].GetSize() ) {
+	/*
+	  Animation time (frameAccumulator) grows only while the animation is played (this function is called).
+	  currentAnimationFrame is the number of key frames whose time is passed, so several key frames can be skipped
+	  on a long frame and animation speed does not depend on FPS. On the end of the clip time wraps with its remainder.
+	*/
+	void Engine::updateAnimationFrames(ecs::components::animation* animationComponent, unsigned int meshID) {
+		const bool hasAnimation = meshID < vulkanRenderer->jointMatricesPerMesh.GetSize() &&
+			vulkanRenderer->jointMatricesPerMesh[meshID].GetSize() > 0 &&
+			meshID < vulkanRenderer->frames.GetSize() &&
+			vulkanRenderer->frames[meshID].GetSize() > 0;
+
+		if ( hasAnimation ) {
+			const core::vector<float>& keyFrameTimes = vulkanRenderer->frames[meshID];
+			const unsigned int keyFramesNumber = keyFrameTimes.GetSize();
+			const float clipDuration = keyFrameTimes[keyFramesNumber - 1];
+
+			animationComponent->frameAccumulator += deltaFrameTime;
+			if ( !(clipDuration > 0.0f) ) {
 				animationComponent->currentAnimationFrame = 0;
-				animationComponent->frameAccumulator = 0.0f;
-			}
-		}
-
-		unsigned int joinMatricesDataSize{};
-		if ( vulkanRenderer->jointMatricesPerMesh.GetSize() > 0 )
-			joinMatricesDataSize = vulkanRenderer->jointMatricesPerMesh[meshID].GetSize();
-
-		core::vector<mat4> jointMatrices;
-		if ( joinMatricesDataSize == 0 ) {
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[i] = unitMatrix;
-			}
-				
-		} else {
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < joinMatricesDataSize; ++i ) {
-				if( meshID >= vulkanRenderer->jointMatricesPerMesh.GetSize() ) {
-					std::cout << "OUTER ARRAY OVERFLOW" << std::endl;
-					throw("sdfsdf");
-				} else if( i >= vulkanRenderer->jointMatricesPerMesh[meshID].GetSize() ) {
-					std::cout << "MIDDLE ARRAY OVERFLOW" << std::endl;
-					throw("sdfsdf");
-				} else if( animationComponent->currentAnimationFrame >= vulkanRenderer->jointMatricesPerMesh[meshID][i].GetSize() ) {
-					std::cout << "frame: " << animationComponent->currentAnimationFrame << std::endl;
-					std::cout << "array size: " << vulkanRenderer->jointMatricesPerMesh[meshID][i].GetSize() << std::endl;
-					std::cout << "frames number: " << vulkanRenderer->frames[meshID].GetSize() << std::endl;
-					std::cout << "INNER ARRAY OVERFLOW" << std::endl;
-					throw("sdfsdf");
+				animationComponent->frameAccumulator      = 0.0f;
+			} else {
+				while ( animationComponent->currentAnimationFrame < keyFramesNumber &&
+						animationComponent->frameAccumulator >= keyFrameTimes[animationComponent->currentAnimationFrame] ) {
+					++animationComponent->currentAnimationFrame;
 				}
 
-				jointMatrices[i] = vulkanRenderer->jointMatricesPerMesh[meshID][i][animationComponent->currentAnimationFrame];
-			}
-			
-			for ( u32 j = joinMatricesDataSize; j < MAX_JOINTS_NUMBER; ++j ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[j] = unitMatrix;
+				if ( animationComponent->currentAnimationFrame >= keyFramesNumber ) {
+					animationComponent->currentAnimationFrame = 0;
+					animationComponent->frameAccumulator      = std::fmod( animationComponent->frameAccumulator, clipDuration );
+				}
 			}
 		}
-		// core::vector<mat4> jointMatrices;
-		// jointMatrices.Resize( MAX_JOINTS_NUMBER );
-		// for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-		// 	mat4 unitMatrix(1.0f);
-		// 	jointMatrices[i] = unitMatrix;
-		// }
-		
-		return jointMatrices;
+
+		core::vector<mat4>& jointMatrices = animationComponent->jointMatrices;
+		if ( jointMatrices.GetSize() != MAX_JOINTS_NUMBER )
+			jointMatrices.Resize(MAX_JOINTS_NUMBER);
+
+		unsigned int jointsNumber = 0;
+		if ( hasAnimation ) {
+			jointsNumber = vulkanRenderer->jointMatricesPerMesh[meshID].GetSize();
+			if ( jointsNumber > MAX_JOINTS_NUMBER ) {
+				std::cerr << "Mesh " << meshID << " has more joints than MAX_JOINTS_NUMBER, extra joints are ignored" << std::endl;
+				jointsNumber = MAX_JOINTS_NUMBER;
+			}
+		}
+
+		for ( unsigned int i = 0; i < jointsNumber; ++i ) {
+			const core::vector<mat4>& jointFrames = vulkanRenderer->jointMatricesPerMesh[meshID][i];
+			if ( jointFrames.GetSize() == 0 ) {
+				jointMatrices[i] = mat4(1.0f);
+				continue;
+			}
+
+			/// Channels of a joint can have less key frames than the clip, then the last one is used
+			const unsigned int frameIndex = std::min( animationComponent->currentAnimationFrame, jointFrames.GetSize() - 1 );
+			jointMatrices[i] = jointFrames[frameIndex];
+		}
+
+		for ( unsigned int j = jointsNumber; j < MAX_JOINTS_NUMBER; ++j )
+			jointMatrices[j] = mat4(1.0f);
 	}
 
 	mat4 Engine::updateDirectionalLightSpaceMatrixShadowMapUBO( ecs::components::directionalLight* directionalLightComponent ) {
@@ -646,8 +570,9 @@ namespace GLVM::core
 		vec3 positionVectorLight = directionalLightComponent->position;
 		vec3 directionVectorLight = directionalLightComponent->direction;
 
+		/// LookAt takes a target point, the light looks along its direction.
 		mat4 viewMatrixLight = LookAtMain(positionVectorLight,
-										  directionVectorLight,
+										  positionVectorLight + directionVectorLight,
 										  { 0.0f, -1.0f, 0.0f });
 
 //		directionalProjectionMatrixLight[1][1] *= -1;
@@ -657,13 +582,15 @@ namespace GLVM::core
 	mat4 Engine::updateSpotLightSpaceMatrixShadowMapUBO( ecs::components::spotLight* spotLightComponent ) {
 		float nearPlaneFlatShadowMap = 5.5f;
 		float farPlaneFlatShadowMap = 100.0f;
-		mat4 spotProjectionMatrixLight = Perspective(Radians(90.0f), 1920.0f / 1080.0f,
+		/// Spot light shadow maps are square (SHADOW_MAP_SIZE x SHADOW_MAP_SIZE).
+		mat4 spotProjectionMatrixLight = Perspective(Radians(90.0f), 1.0f,
 														 nearPlaneFlatShadowMap, farPlaneFlatShadowMap);
-		
+
 		vec3 positionVectorLight  = spotLightComponent->position;
 		vec3 directionVectorLight = spotLightComponent->direction;
+		/// LookAt takes a target point, the light looks along its direction.
 		mat4 viewMatrixLight = LookAtMain(positionVectorLight,
-										  directionVectorLight,
+										  positionVectorLight + directionVectorLight,
 										  { 0.0f, -1.0f, 0.0f });
 
 //		spotProjectionMatrixLight[1][1] *= -1;
@@ -765,7 +692,7 @@ namespace GLVM::core
 	mat4 Engine::updateDataUBO_IconsUI(ecs::components::transform* itemTransfromComponent,
 									   [[maybe_unused]] ecs::components::collider* itemColliderComponent,
 									   ecs::components::item* itemComponent,
-									   const unsigned int rowInventory,
+									   [[maybe_unused]] const unsigned int rowInventory,
 									   const unsigned int columnInventory,
 									   ecs::components::transform* inventoryTransformComponent,
 									   ecs::components::mesh* itemMesh,
@@ -776,9 +703,10 @@ namespace GLVM::core
 		} else {
 			const unsigned int inventorySlotEntity_0 = itemComponent->occupiedSlots[0];
 			const unsigned int inventorySlotEntity_3 = itemComponent->occupiedSlots.GetHead();
-			const unsigned int rowIndexFirstSlot = inventorySlotEntity_0 / rowInventory;
+			/// Slot index is row * columnInventory + column
+			const unsigned int rowIndexFirstSlot = inventorySlotEntity_0 / columnInventory;
 			const unsigned int colIndexFirstSlot = inventorySlotEntity_0 % columnInventory;
-			const unsigned int rowIndexSecondSlot = inventorySlotEntity_3 / rowInventory;
+			const unsigned int rowIndexSecondSlot = inventorySlotEntity_3 / columnInventory;
 			const unsigned int colIndexSecondSlot = inventorySlotEntity_3 % columnInventory;
 
 			const float itemScale             = itemTransfromComponent->scale;
@@ -969,14 +897,14 @@ namespace GLVM::core
 				components[arch::ComponentsIndices::HEALTH_COMPONENT];
 
 			unsigned int uiVertexId = 0;
-			if( ecs::arch::matchesRequiredMask( arch->mask, arch::playerComponentMask ) ) {
+			if( arch->entityCount > 0 && ecs::arch::matchesRequiredMask( arch->mask, arch::playerComponentMask ) ) {
 				uiVertexId = healthBarMeshes[0].handle.id;
 			}
 
 			uiVertexId = 0;               ///< TODO: Need to consider another solution
-			
+
 			for ( unsigned int i = 0; i < arch->entityCount; ++i ) {
-				if( !healthBars->randarable ) {
+				if( !healthBars[i].randarable ) {
 					continue;
 				}
 				
@@ -1018,6 +946,8 @@ namespace GLVM::core
 		if ( vulkanRenderer->isInventoryOpened ) {
 			vulkanRenderer->inventories.clear();
 			uint32_t inventoryCounter = 0;
+			vulkanRenderer->items.clear();                  ///< Items of all inventories are collected, so the list is cleared once
+			uint32_t itemCounter = 0;
 			inventoryArchetypesNumber = 0;
 			arch::world.searchCacheArchetypes( inventoryRequiredMask, cachedInventoryArchetypes, inventoryArchetypesNumber );
 			
@@ -1059,8 +989,6 @@ namespace GLVM::core
 						cm::inventory* inventoryComponent          = &inventory[i];
 						cm::transform* inventoryTransformComponent = &inventoryTransforms[i];
 		
-						vulkanRenderer->items.clear();
-						uint32_t itemCounter = 0;
 						itemArchetypesNumber = 0;
 						arch::world.searchCacheArchetypes( itemRequiredMask, cachedItemArchetypes, itemArchetypesNumber );
 						
@@ -1115,7 +1043,8 @@ namespace GLVM::core
 		vulkanRenderer->crosshairs.clear();
 		crosshairActorsArchetypesNumber = 0;
 		arch::world.searchCacheArchetypes( crosshairRequiredMask, cachedCrosshairActorsArchetypes, crosshairActorsArchetypesNumber );
-		
+
+		uint32_t crosshairCounter = 0;
 		for( uint32_t x = 0; x < crosshairActorsArchetypesNumber; ++x ) {
 			arch::Archetype* arch = cachedCrosshairActorsArchetypes[x];
 			cm::transform* crosshairTransforms = (ecs::components::transform*)arch->
@@ -1127,8 +1056,9 @@ namespace GLVM::core
 				vulkanRenderer->crosshairs.Push({});
 				cm::transform* cursorTransform = &crosshairTransforms[i];
 				unsigned int meshID            = crosshairMeshes[i].handle.id;
-				vulkanRenderer->crosshairs[i].meshID = meshID;
-				vulkanRenderer->crosshairs[i].model  = updateDataHudScreenUBO( cursorTransform );
+				vulkanRenderer->crosshairs[crosshairCounter].meshID = meshID;
+				vulkanRenderer->crosshairs[crosshairCounter].model  = updateDataHudScreenUBO( cursorTransform );
+				++crosshairCounter;
 			}
 		}
 
@@ -1154,12 +1084,7 @@ namespace GLVM::core
 			ecs::tagComponents::levelChunkTagComponent* levelChunks = (ecs::tagComponents::levelChunkTagComponent*)arch->
 				components[arch::ComponentsIndices::LEVEL_CHUNK_TAG_COMPONENT];
 			
-			core::vector<mat4> jointMatrices;
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[i] = unitMatrix;
-			}
+			const core::vector<mat4>& jointMatrices = identityJointMatrices;     ///< Not animated actors
 			
 			for( uint32_t n = 0; n < arch->entityCount; ++n ) {
 				cm::transform* transformComponent = &levelChunkTransforms[n];
@@ -1200,11 +1125,13 @@ namespace GLVM::core
 		}
 
 		animationActorsArchetypesNumber = 0;
-		arch::world.searchCacheArchetypes( animationRequiredMask, cachedAnimationArchetypes, animationActorsArchetypesNumber );
+		arch::world.searchCacheArchetypes( animatedActorsRequiredMask, cachedAnimationActorsArchetypes, animationActorsArchetypesNumber );
 
+		const arch::componentMask playerTagMask = (1ull << arch::ComponentsIndices::PLAYER_TAG_COMPONENT);
 		uint32_t animationActorsCounter = levelChunkActorsCounter;
 		for( uint32_t x = 0; x < animationActorsArchetypesNumber; ++x ) {
 			arch::Archetype* arch = cachedAnimationActorsArchetypes[x];
+			const bool isPlayerArchetype = arch::matchesRequiredMask( arch->mask, playerTagMask );
 			cm::transform* actorTransforms = (ecs::components::transform*)arch->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
 			cm::mesh*      actorMeshes     = (ecs::components::mesh*)arch->
@@ -1227,83 +1154,15 @@ namespace GLVM::core
 				if( actorTransforms && actorMaterials &&
 					actorAnimations && actorRotations ) {
 
-					if( abs(transformComponent->frameMovement[0]) > 0.0 ||
-						abs(transformComponent->frameMovement[2]) > 0.0 ) {
-						/// Needed only projection on XZ plane
-						const vec2 tempFrameMovement = vec2(transformComponent->frameMovement[0], transformComponent->frameMovement[2]);
-
-						float sign = cross<float>(vec2(tempFrameMovement[0], tempFrameMovement[1]),
-										   vec2(transformComponent->forward[0], transformComponent->forward[2]));
-
-						float rotationAngle = acos(clamp(-1.0f, Dot(Normalize(vec3(transformComponent->frameMovement[0], 0.0,
-																						 transformComponent->frameMovement[2])),
-																		  Normalize(vec3(transformComponent->forward[0], 0.0,
-																						 transformComponent->forward[2]))), 1.0f));
-
-						if( rotationAngle < 0.0005f && ((int32_t)hud_screen_x * 10000 - (int32_t)previous_hud_screen_x * 10000) == 0.0f ) {
-							rotationAngle = 0.0f;
-						} ///< TODO: Weird workaround solution. Find another one
-
-						previous_hud_screen_x = hud_screen_x;
-						
-						int currentFrameEvents[4];
-							
-						if((Input_Stack_.SearchElement(EEvents::eMOVE_FORWARD)) == EEvents::eMOVE_FORWARD) {
-							currentFrameEvents[0] = eMOVE_FORWARD;
-						} else {
-							currentFrameEvents[0] = 0;
-						}
-						if((Input_Stack_.SearchElement(EEvents::eMOVE_BACKWARD)) == EEvents::eMOVE_BACKWARD) {
-							currentFrameEvents[1] = eMOVE_BACKWARD;
-						} else {
-							currentFrameEvents[1] = 0;
-						}
-						if((Input_Stack_.SearchElement(EEvents::eMOVE_LEFT)) == EEvents::eMOVE_LEFT) {
-							currentFrameEvents[2] = eMOVE_LEFT;
-						} else {
-							currentFrameEvents[2] = 0;
-						}
-						if((Input_Stack_.SearchElement(EEvents::eMOVE_RIGHT)) == EEvents::eMOVE_RIGHT) {
-							currentFrameEvents[3] = eMOVE_RIGHT;
-						} else {
-							currentFrameEvents[3] = 0;
-						}
-
-						if( currentFrameEvents[0] == previousFrameKeyEvents[0] &&
-							currentFrameEvents[1] == previousFrameKeyEvents[1] &&
-							currentFrameEvents[2] == previousFrameKeyEvents[2] &&
-							currentFrameEvents[3] == previousFrameKeyEvents[3] ) {
-//							std::cout << "Default case " << std::endl;
-						} else if ( currentFrameEvents[0] == 0 &&
-									currentFrameEvents[1] == 0 &&
-									currentFrameEvents[2] == 0 &&
-									currentFrameEvents[3] == 0 ) {
-//							std::cout << "Second default case " << std::endl;
-						} else {
-							previousFrameKeyEvents[0] = currentFrameEvents[0];
-							previousFrameKeyEvents[1] = currentFrameEvents[1];
-							previousFrameKeyEvents[2] = currentFrameEvents[2];
-							previousFrameKeyEvents[3] = currentFrameEvents[3];
-//							std::cout << "Rewrite key events " << std::endl;
-							if( sign > 0.0f ) {
-								sign = 1.0f;
-							} else if( sign < 0.0f ) {
-								sign = -1.0f;
-							} else {
-								sign = 1.0f;
-							}
-
-							transformComponent->pitch += rotationAngle * sign;
-							transformComponent->forward = transformComponent->frameMovement;
-							transformComponent->previousFrameForward = transformComponent->forward;
-						}
-					} else {
-						previousFrameKeyEvents[0] = 0.0f;
-						previousFrameKeyEvents[1] = 0.0f;
-						previousFrameKeyEvents[2] = 0.0f;
-						previousFrameKeyEvents[3] = 0.0f;
+					/// Moving player model faces the direction of its movement (only player has frameMovement)
+					if( isPlayerArchetype && ( transformComponent->frameMovement[0] != 0.0f || transformComponent->frameMovement[2] != 0.0f ) ) {
+						initializePlayerModelYawOffset( *transformComponent );
+						const vec3 movementDirection = Normalize( vec3( transformComponent->frameMovement[0], 0.0f, transformComponent->frameMovement[2] ) );
+						transformComponent->pitch                = playerModelYawOffset + directionAngleXZ( movementDirection );
+						transformComponent->forward              = transformComponent->frameMovement;
+						transformComponent->previousFrameForward = transformComponent->forward;
 					}
-					
+
 					const AABB worldAABB = computeWorldAABB( meshComponent->aabb, transformComponent->position );
 					const bool isFrustumIntersectFlag = isFrustumIntersect( vulkanRenderer->mainCameraFrustum, worldAABB );
 
@@ -1319,14 +1178,13 @@ namespace GLVM::core
 						++collisionsWireframesCounter;
 						
 						vulkanRenderer->actors.Push({});
-						vulkanRenderer->actors[animationActorsCounter].modelMatrix   = computeModelMatrix(transformComponent, rotationComponent);
-						if( animationComponent->isAnimatedOnFrame ) {
-							vulkanRenderer->actors[animationActorsCounter].jointMatrices = updateAnimationFrames(animationComponent, meshID);
-							animationComponent->jointMatrices = vulkanRenderer->actors[animationActorsCounter].jointMatrices;
+						vulkanRenderer->actors[animationActorsCounter].modelMatrix   = model;
+						/// Joint matrices are computed into the animation component and copied to the renderer once
+						if( animationComponent->isAnimatedOnFrame || animationComponent->jointMatrices.GetSize() != MAX_JOINTS_NUMBER ) {
+							updateAnimationFrames(animationComponent, meshID);
 							animationComponent->isAnimatedOnFrame = false;
-						} else {
-							vulkanRenderer->actors[animationActorsCounter].jointMatrices = animationComponent->jointMatrices;
 						}
+						vulkanRenderer->actors[animationActorsCounter].jointMatrices = animationComponent->jointMatrices;
 						vulkanRenderer->actors[animationActorsCounter].meshID    = meshID;
 						vulkanRenderer->actors[animationActorsCounter].diffuseTextureIndex  = materialComponent->diffuseTextureID_.id;
 						vulkanRenderer->actors[animationActorsCounter].specularTextureIndex = materialComponent->specularTextureID_.id;
@@ -1353,12 +1211,7 @@ namespace GLVM::core
 			cm::rotation*  staticActorRotations  = (ecs::components::rotation*)arch->
 				components[arch::ComponentsIndices::ROTATION_COMPONENT];
 			
-			core::vector<mat4> jointMatrices;
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[i] = unitMatrix;
-			}
+			const core::vector<mat4>& jointMatrices = identityJointMatrices;     ///< Not animated actors
 
 			for( uint32_t n = 0; n < arch->entityCount; ++n ) {
 				cm::transform* transformComponent = &staticActorTransforms[n];
@@ -1383,7 +1236,7 @@ namespace GLVM::core
 						vulkanRenderer->collisionsWireframes[collisionsWireframesCounter].meshAxisMaxAbsoluteValues = allMeshMaxAbsoluteValues[meshID];
 						++collisionsWireframesCounter;
 					
-						vulkanRenderer->actors[staticActorsCounter].modelMatrix   = computeModelMatrix(transformComponent, rotationComponent);
+						vulkanRenderer->actors[staticActorsCounter].modelMatrix   = model;
 						vulkanRenderer->actors[staticActorsCounter].jointMatrices = jointMatrices;
 						vulkanRenderer->actors[staticActorsCounter].meshID        = meshID;
 						vulkanRenderer->actors[staticActorsCounter].diffuseTextureIndex  = materialComponent->diffuseTextureID_.id;
@@ -1411,15 +1264,9 @@ namespace GLVM::core
 			cm::rotation*            actorRotations          = (ecs::components::rotation*)arch->
 				components[arch::ComponentsIndices::ROTATION_COMPONENT];
 
-			core::vector<mat4> jointMatrices;
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[i] = unitMatrix;
-			}
+			const core::vector<mat4>& jointMatrices = identityJointMatrices;     ///< Not animated actors
 			
 			for( uint32_t n = 0; n < arch->entityCount; ++n ) {
-				vulkanRenderer->isCollisionsWireframeBuffersInitialized = false;
 				cm::transform* transformComponent = &actorTransforms[n];
 				cm::material*  materialComponent  = &actorProjectileBundles[n].material;
 				cm::rotation*  rotationComponent  = &actorRotations[n];
@@ -1441,7 +1288,7 @@ namespace GLVM::core
 						vulkanRenderer->collisionsWireframes[collisionsWireframesCounter].meshAxisMaxAbsoluteValues = allMeshMaxAbsoluteValues[meshID];
 						++collisionsWireframesCounter;
 					
-						vulkanRenderer->actors[projectileActorsCounter].modelMatrix   = computeModelMatrix(transformComponent, rotationComponent);
+						vulkanRenderer->actors[projectileActorsCounter].modelMatrix   = model;
 						vulkanRenderer->actors[projectileActorsCounter].jointMatrices = jointMatrices;
 						vulkanRenderer->actors[projectileActorsCounter].meshID        = meshID;
 						vulkanRenderer->actors[projectileActorsCounter].diffuseTextureIndex  = materialComponent->diffuseTextureID_.id;
@@ -1479,12 +1326,7 @@ namespace GLVM::core
 				components[arch::ComponentsIndices::ITEM_COMPONENT];
 
 			
-			core::vector<mat4> jointMatrices;
-			jointMatrices.Resize(MAX_JOINTS_NUMBER);
-			for ( unsigned int i = 0; i < MAX_JOINTS_NUMBER; ++i ) {
-				mat4 unitMatrix(1.0f);
-				jointMatrices[i] = unitMatrix;
-			}
+			const core::vector<mat4>& jointMatrices = identityJointMatrices;     ///< Not animated actors
 			
 			for( uint32_t n = 0; n < arch->entityCount; ++n ) {
 				if( items[n].isActor ) {
@@ -1509,7 +1351,7 @@ namespace GLVM::core
 							vulkanRenderer->collisionsWireframes[collisionsWireframesCounter].meshAxisMaxAbsoluteValues = allMeshMaxAbsoluteValues[meshID];
 							++collisionsWireframesCounter;
 						
-							vulkanRenderer->actors[itemActorsCounter].modelMatrix   = computeModelMatrix(transformComponent, rotationComponent);
+							vulkanRenderer->actors[itemActorsCounter].modelMatrix   = model;
 							vulkanRenderer->actors[itemActorsCounter].jointMatrices = jointMatrices;
 							vulkanRenderer->actors[itemActorsCounter].meshID        = meshID;
 							vulkanRenderer->actors[itemActorsCounter].diffuseTextureIndex  = materialComponent->diffuseTextureID_.id;
@@ -1545,18 +1387,17 @@ namespace GLVM::core
 				cm::transform* mathObjectTransformComponent  = &mathObjectTransforms[n];
 				cm::rotation*  mathObjectRotationComponent   = &mathObjectRotations[n];
 				cm::meshGeneration* mathObjectGenerationMesh = &mathObjectGeneratedMeshes[n];
-				if( &mathObjectTransforms[n] != nullptr ) {
+				if( mathObjectTransforms && mathObjectGeneratedMeshes ) {
 //					const unsigned int meshID = mathObjectMeshes[n].handle.id;
 					vulkanRenderer->mathObjects.Push({});
-						
+
 					const mat4 model = computeModelMatrix(mathObjectTransformComponent, mathObjectRotationComponent);
 					vulkanRenderer->mathObjects[mathObjectEntityCount].meshID      = mathObjectGenerationMesh->meshID;
 					vulkanRenderer->mathObjects[mathObjectEntityCount].modelMatrix = model;
 					vulkanRenderer->mathObjects[mathObjectEntityCount].position    = mathObjectTransformComponent->position;
 					vulkanRenderer->mathObjects[mathObjectEntityCount].forward     = mathObjectTransformComponent->forward;
+					++mathObjectEntityCount;
 				}
-				
-				++mathObjectEntityCount;
 			}
 
 		}
@@ -1579,7 +1420,7 @@ namespace GLVM::core
 			for( unsigned int n = 0; n < arch->entityCount; ++n ) {
 				cm::transform* playerTransformComponent = &playerTransforms[n];
 				cm::rotation*  playerRotationComponent  = &playerRotations[n];
-				if( &playerTransforms[n] != nullptr ) {
+				if( playerTransforms && playerMeshes ) {
 					const unsigned int meshID = playerMeshes[n].handle.id;
 
 					const AABB worldAABB = computeWorldAABB( playerMeshes[n].aabb, playerTransformComponent->position );
@@ -1599,10 +1440,9 @@ namespace GLVM::core
 					
 						vulkanRenderer->players[playerEntityCount].position = playerTransformComponent->position;
 						vulkanRenderer->players[playerEntityCount].forward  = playerTransformComponent->forward;
+						++playerEntityCount;                   ///< Counts only pushed (visible) players
 					}
 				}
-
-				++playerEntityCount;
 			}
 		}
 	}
@@ -1612,8 +1452,9 @@ namespace GLVM::core
             CWaveFrontObjParser parser;
             CWaveFrontObjParser* wavefrontObjParser = &parser;
             
-            wavefrontObjParser->ReadFile(pathsArray_[m]);
-            wavefrontObjParser->ParseFile();
+            if ( !wavefrontObjParser->ReadFile(pathsArray_[m]) )
+				throw std::runtime_error(std::string("Can't read Wavefront .obj file: ") + pathsArray_[m]);
+            wavefrontObjParser->ParseFile();                                                        ///< Faces are triangles with validated 0-based indices
 
             vulkanRenderer->aIndices_.emplace_back();
             vulkanRenderer->aVertices_.emplace_back();
@@ -1631,12 +1472,12 @@ namespace GLVM::core
 			
             for (unsigned int i = 0; i < faceVerticesSize; ++i)
                 for (int j = 0; j < 3; ++j) {
-                    vertexIndex     = wavefrontObjParser->getFaces()[i][0][j] - 1;
+                    vertexIndex     = wavefrontObjParser->getFaces()[i][0][j];
 					vulkanRenderer->aIndices_[m].push_back(i * 3 + j);
                     SVertex vertex  = wavefrontObjParser->getCoordinateVertices()[vertexIndex];
-                    textureIndex    = wavefrontObjParser->getFaces()[i][1][j] - 1;
+                    textureIndex    = wavefrontObjParser->getFaces()[i][1][j];
                     SVertex texture = wavefrontObjParser->getTextureVertices()[textureIndex];
-					normalIndex     = wavefrontObjParser->getFaces()[i][2][j] - 1;
+					normalIndex     = wavefrontObjParser->getFaces()[i][2][j];
 					SVertex normal  = wavefrontObjParser->getNormals()[normalIndex];
 
 					vec4 jointIndices;
@@ -1713,57 +1554,106 @@ namespace GLVM::core
 		}
 	}
 
-	bool Engine::isModelCacheExists( const std::string& modelFilePath ) {
-		std::ofstream modelsCache("../cache/models/cache", std::ios::app);
+	namespace
+	{
+		const char* const kModelsCachePath = "../cache/models/cache";
 
-		if( !modelsCache.is_open() ) {
-			std::cerr << "Error opening the models cache file" << std::endl;
-			throw std::runtime_error("Failed to load mesh cache");
+		/// Changes whenever the model file is re-exported: file size and last write time.
+		std::string modelFileStamp( const std::string& modelFilePath ) {
+			std::error_code error;
+			const std::uintmax_t fileSize = std::filesystem::file_size( modelFilePath, error );
+			if ( error )
+				return "";
+			const auto writeTime = std::filesystem::last_write_time( modelFilePath, error );
+			if ( error )
+				return "";
+			return std::to_string( fileSize ) + ":" + std::to_string( writeTime.time_since_epoch().count() );
 		}
 
-		std::ifstream file("../cache/models/cache");
+		std::string firstToken( const std::string& line ) {
+			std::istringstream iss(line);
+			std::string token;
+			iss >> token;
+			return token;
+		}
+	}
+
+	/*
+	  Models cache line: <path> <highest_x> <lowest_x> <highest_y> <lowest_y> <highest_z> <lowest_z> <stamp>.
+	  The path must match exactly and the stamp must match the current model file, otherwise the entry is stale.
+	  The cache is only an optimization: any I/O problem just disables it.
+	*/
+	bool Engine::isModelCacheExists( const std::string& modelFilePath ) {
+		std::ifstream file(kModelsCachePath);
+		if( !file.is_open() ) {
+			return false;
+		}
+
+		const std::string stamp = modelFileStamp( modelFilePath );
+		if( stamp.empty() ) {
+			return false;
+		}
 
 		std::string line;
 		while (std::getline(file, line)) {
-			if (line.find(modelFilePath) != std::string::npos) {
-				std::cout << "Model with pafile path: " << modelFilePath << " is already exists in cache" << std::endl;
+			std::istringstream iss(line);
 
-				std::istringstream iss(line);
+			std::string keyword;
+			std::string lineStamp;
+			float highest_x, lowest_x, highest_y, lowest_y, highest_z, lowest_z;
 
-				std::string keyword;
-				float highest_x, lowest_x, highest_y, lowest_y, highest_z, lowest_z;
-
-				iss >> keyword >> highest_x >> lowest_x >> highest_y >> lowest_y >> highest_z >> lowest_z;
-				vulkanRenderer->meshAxisLimitingValues.highest_x = highest_x;
-				vulkanRenderer->meshAxisLimitingValues.lowest_x  = lowest_x;
-				vulkanRenderer->meshAxisLimitingValues.highest_y = highest_y;
-				vulkanRenderer->meshAxisLimitingValues.lowest_y  = lowest_y;
-				vulkanRenderer->meshAxisLimitingValues.highest_z = highest_z;
-				vulkanRenderer->meshAxisLimitingValues.lowest_z  = lowest_z;
-
-				isAlreadyCached = true;
-				
-				modelsCache.close();
-				return true;
+			if ( !(iss >> keyword >> highest_x >> lowest_x >> highest_y >> lowest_y >> highest_z >> lowest_z >> lineStamp) ) {
+				continue;                                                                       ///< Malformed or old format entry
 			}
+			if ( keyword != modelFilePath || lineStamp != stamp ) {
+				continue;
+			}
+
+			std::cout << "Model with file path: " << modelFilePath << " is already exists in cache" << std::endl;
+			vulkanRenderer->meshAxisLimitingValues.highest_x = highest_x;
+			vulkanRenderer->meshAxisLimitingValues.lowest_x  = lowest_x;
+			vulkanRenderer->meshAxisLimitingValues.highest_y = highest_y;
+			vulkanRenderer->meshAxisLimitingValues.lowest_y  = lowest_y;
+			vulkanRenderer->meshAxisLimitingValues.highest_z = highest_z;
+			vulkanRenderer->meshAxisLimitingValues.lowest_z  = lowest_z;
+
+			isAlreadyCached = true;
+			return true;
 		}
 
-		modelsCache.close();
 		return false;
 	}
 	
 	void Engine::writeModelsCache( const std::string& modelFilePath ) {
-		std::ofstream modelsCache("../cache/models/cache", std::ios::app);
-
-		if( !modelsCache.is_open() ) {
-			std::cerr << "Error opening the models cache file" << std::endl;
-			throw std::runtime_error("Failed to load mesh cache");
+		const std::string stamp = modelFileStamp( modelFilePath );
+		if( stamp.empty() || modelFilePath.find_first_of(" \t") != std::string::npos ) {
+			return;                                                                             ///< Can't build a reliable cache key
 		}
 
-		std::size_t pos = modelFilePath.find(' ');
-		std::string firstPart = (pos == std::string::npos)
-			? modelFilePath
-			: modelFilePath.substr(0, pos);
+		std::error_code error;
+		std::filesystem::create_directories( std::filesystem::path(kModelsCachePath).parent_path(), error );
+
+		/// Keep every other model's entry, replace the entry of this model
+		std::vector<std::string> keptLines;
+		{
+			std::ifstream file(kModelsCachePath);
+			std::string line;
+			while ( std::getline(file, line) ) {
+				if ( !line.empty() && firstToken(line) != modelFilePath ) {
+					keptLines.push_back(line);
+				}
+			}
+		}
+
+		std::ofstream modelsCache(kModelsCachePath, std::ios::trunc);
+		if( !modelsCache.is_open() ) {
+			std::cerr << "Warning: can't write the models cache file " << kModelsCachePath << ", models cache is disabled" << std::endl;
+			return;
+		}
+
+		for ( const std::string& line : keptLines ) {
+			modelsCache << line << std::endl;
+		}
 		
 		modelsCache << modelFilePath;
 		modelsCache << " " << vulkanRenderer->meshAxisLimitingValues.highest_x << " " <<
@@ -1771,7 +1661,7 @@ namespace GLVM::core
 			vulkanRenderer->meshAxisLimitingValues.highest_y << " " <<
 			vulkanRenderer->meshAxisLimitingValues.lowest_y << " " <<
 			vulkanRenderer->meshAxisLimitingValues.highest_z << " " <<
-			vulkanRenderer->meshAxisLimitingValues.lowest_z << std::endl;
+			vulkanRenderer->meshAxisLimitingValues.lowest_z << " " << stamp << std::endl;
 
 		modelsCache.close();
 	}
@@ -1922,16 +1812,17 @@ namespace GLVM::core
 		mathObjectArchetypesNumber = 0;
 		arch::world.searchCacheArchetypes( mathObjectRequiredMask, cachedMathObjectArchetypes, mathObjectArchetypesNumber );
 
+		u32 generatedMeshesCounter = 0;                         ///< Mesh id is an index in mathObjectsVertices common for all archetypes
 		for( u32 i0 = 0; i0 < mathObjectArchetypesNumber; ++i0 ) {
 			arch::Archetype* arch = cachedMathObjectArchetypes[i0];
 			cm::meshGeneration* mathObjectGeneratedMeshes = (ecs::components::meshGeneration*)arch->
 				components[arch::ComponentsIndices::MESH_GENERATION_COMPONENT];
 			cm::transform* transformGeneratedMeshes = (ecs::components::transform*)arch->
 				components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
-			
+
 			for( u32 i1 = 0; i1 < arch->entityCount; ++i1 ) {
 				const cm::transform* transform = &transformGeneratedMeshes[i1];
-				mathObjectGeneratedMeshes[i1].meshID = i1;
+				mathObjectGeneratedMeshes[i1].meshID = generatedMeshesCounter++;
 				const core::vector<vec3>& vertices = mathObjectGeneratedMeshes[i1].vertices;
 				const u32 verticesNumber = vertices.GetSize();
 
@@ -1978,7 +1869,8 @@ namespace GLVM::core
 											transform->forward,
 											vec3( 0.0f, -1.0f, 0.0) );
 
-					const mat4 projectionMatrix = SetProjectionMatrix( 90.0f, 1920.0f, 1080.0f, 0.1f, 100.0f );
+					/// Debug geometry is generated once, so aspect rate of the moment of initialization is used
+					const mat4 projectionMatrix = SetProjectionMatrix( 90.0f, getViewportAspectRate(), 1.0f, 0.1f, 100.0f );
 					mat4 vp = view * projectionMatrix;
 					vp = inverse_matrix_4x4( vp );
 					const vec4 tempVector = vec4( vertex[0], vertex[1], vertex[2], 1.0 ) * vp;
@@ -1998,7 +1890,9 @@ namespace GLVM::core
 					// 	tempVector[0], tempVector[1], tempVector[2], tempVector[3]
 					// 	);
 					
-					vertex = vec3(tempVector[0] / tempVector[3], tempVector[1] / tempVector[3], tempVector[2] / tempVector[3]);
+					/// Points at infinity (w == 0) can not be projected back
+					const float w = std::abs( tempVector[3] ) > 1e-6f ? tempVector[3] : 1e-6f;
+					vertex = vec3(tempVector[0] / w, tempVector[1] / w, tempVector[2] / w);
 
 					SVertex vertexVK;
 					vertexVK[0] = vertex[0];
@@ -2037,7 +1931,10 @@ namespace GLVM::core
 				cm::mesh*      meshComponent      = &meshes[n];
 
 				unsigned int meshID               = meshComponent->handle.id;
-				const GLVM::core::MeshAxisMaxAbsoluteValues meshAxisMaxAbsoluteValues = allMeshMaxAbsoluteValues[meshID];
+				if ( meshID >= allMeshMaxAbsoluteValues.GetSize() )
+					continue;
+
+				const GLVM::core::MeshAxisMaxAbsoluteValues& meshAxisMaxAbsoluteValues = allMeshMaxAbsoluteValues[meshID];
 				const AABB localAABB = computeLocalAABB( transformComponent->scale,
 														 vec3( meshAxisMaxAbsoluteValues.origin_offset_x,
 															   meshAxisMaxAbsoluteValues.origin_offset_y,
@@ -2166,14 +2063,18 @@ namespace GLVM::core
 	
     void Engine::GameKill()
     {
+		/// Stop the sound thread first and only then close the device: the thread can write into it while playing
 		runningSound = false;
-		soundEngine->CloseDevice();
-		
+		if ( soundEngine )
+			soundEngine->StopStream();
+
 		if (sound_thread.joinable())
 		{
 			sound_thread.join();
 		}
-		
+
+		if ( soundEngine )
+			soundEngine->CloseDevice();
 		delete soundEngine;
 		soundEngine = nullptr;
 		
@@ -2193,6 +2094,12 @@ namespace GLVM::core
 		enemySytem = nullptr;
 		delete itemSystem;
 		itemSystem = nullptr;
+		delete spatialGridSystem;
+		spatialGridSystem = nullptr;
+		delete procuduralLevelGeneratingSystem;
+		procuduralLevelGeneratingSystem = nullptr;
+		delete inventorySystem;
+		inventorySystem = nullptr;
 		// delete pSystem_Manager;
 		// pSystem_Manager = nullptr;
     }

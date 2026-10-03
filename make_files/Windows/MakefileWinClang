@@ -1,48 +1,42 @@
+# GLVM native Windows build from cmd.exe with LLVM clang (https://github.com/llvm/llvm-project/releases) in PATH.
+# Run from the project root (the Vulkan SDK installer sets VULKAN_SDK):
+#   mingw32-make -f make_files/Windows/MakefileWinClang     -> build\winGame.exe
+# The executable must stay in build\: resources are looked up as ..\<dir>\ relative to the executable.
+
 CXX = clang++
-CC = clang
-VULKAN_SDK = C:/VulkanSDK/1.4.357.0
-LDFLAGS = -I$(VULKAN_SDK)/Include -L$(VULKAN_SDK)/Lib -lgdi32 -luser32 -lwinmm -lvulkan-1 -mconsole  -Wl,/DEBUG
-CXXFLAGS = -c -std=c++20 -g -Wall -I$(VULKAN_SDK)/Include -O0
-CFLAGS = -c -g -Wall -O0
-INC = -I./include
-TEX = -I./textures
-BUILD = build
-SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
-	./src/Event.cpp ./src/WinApi/ChronoWin.cpp ./src/TimerCreator.cpp \
-	./src/Systems/CollisionSystem.cpp ./src/Systems/AnimationSystem.cpp \
-	./src/Systems/PhysicsSystem.cpp ./src/ComponentManager.cpp ./src/EntityManager.cpp ./src/Systems/MovementSystem.cpp \
-	./src/SystemManager.cpp ./src/Systems/ProjectileSystem.cpp \
-	./src/WinApi/SoundEngineWaveform.cpp ./src/SoundEngineFactory.cpp ./src/GraphicAPI/Vulkan.cpp ./src/TextureManager.cpp \
-	./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
-	./src/WinApi/WindowWinVulkan.cpp \
-	./src/UnixApi/WaylandVariables.cpp \
-	./textures/tileset.cpp \
-	./src/Systems/ItemSystem.cpp ./src/ProceduralLevelGeneratingSystem.cpp \
-	./src/Systems/InventorySystem.cpp ./src/GraphicAPI/VkBuilders.cpp \
-	./src/GraphicAPI/RenderData.cpp ./src/GraphicAPI/VkDebugUtils.cpp \
-	./textures/chelik.cpp ./textures/witch.cpp ./textures/crosshair.cpp ./textures/gray.cpp \
-	./textures/container2.cpp ./textures/container2_specular.cpp \
-	./src/Systems/DamageSystem.cpp ./src/Systems/EnemySystem.cpp ./textures/fontAtlas.cpp ./textures/inventorySlot.cpp \
-	./src/ThreadPool.cpp ./src/ArchetypedECS/ArchECS_Utils.cpp \
-	./src/ArchetypedECS/ArchECS_World.cpp ./src/ArchetypedECS/ArchetypeEntityManager.cpp \
-	./src/ArchetypedECS/ArchetypeInterface.cpp ./src/Systems/SpatialGridSystem.cpp \
-	./src/Common/CommonFunctions.cpp \
-	
-OBJECTS = $(SOURCES:./src/%.cpp=$(BUILD)\\%.o)
-EXECUTABLE = winGame.exe
 
-all:$(SOURCES) $(EXECUTABLE)
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(strip $(VULKAN_SDK)),)
+$(error VULKAN_SDK is not set: install the Vulkan SDK or set VULKAN_SDK=C:/VulkanSDK/<version>)
+endif
+endif
 
-$(EXECUTABLE): $(OBJECTS)
-	$(CXX) $(OBJECTS) $(LDFLAGS) -o $(BUILD)/$@
+BUILD    = build
+OBJ_DIR  = $(BUILD)/obj-clang
+CPPFLAGS = -I./include -I./textures -I$(VULKAN_SDK)/Include -MMD -MP
+CXXFLAGS = -std=c++20 -O2 -g -Wall
+LDFLAGS  = -L$(VULKAN_SDK)/Lib -mconsole -Wl,/DEBUG
+LDLIBS   = -lvulkan-1 -lgdi32 -luser32 -lwinmm
 
-$(BUILD)\\%.o : ./src/%.cpp
-	if not exist $(@D) mkdir $(@D)
-	$(CXX) $(INC) $(TEX) $(CXXFLAGS) $< -o $@
+include make_files/sources.mk
 
-$(BUILD)\\%.o : %.c
-	$(CC) $(INC) $(TEX) $(CFLAGS) $< -o $@
+SOURCES = $(GLVM_COMMON_SOURCES) $(GLVM_WINDOWS_SOURCES) $(GLVM_TEXTURE_SOURCES)
+OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
+TARGET  = $(BUILD)/winGame.exe
+
+.PHONY: all clean
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	$(CXX) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
+
+$(OBJ_DIR)/%.o: ./%.cpp
+	if not exist "$(subst /,\,$(@D))" mkdir "$(subst /,\,$(@D))"
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	del /f /s /q "$(BUILD)\*.*"
+	if exist "$(subst /,\,$(OBJ_DIR))" rmdir /s /q "$(subst /,\,$(OBJ_DIR))"
+	if exist "$(subst /,\,$(TARGET))" del /f /q "$(subst /,\,$(TARGET))"
 
+-include $(OBJECTS:.o=.d)

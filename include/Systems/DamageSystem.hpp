@@ -21,7 +21,8 @@ namespace GLVM::ecs
 	public:
 		void Update() override;
 
-		float deltaTime;
+		float deltaTime = 0.0f;
+		bool  isPlayerDeathReported = false;
 
 		uint32_t cachedAttackableArchetypesNumber = 0;
 		uint32_t cachedFontArchetypesNumber       = 0;
@@ -45,6 +46,9 @@ namespace GLVM::ecs
 
 		arch::componentMask fontRequiredMask =
 			(1ull << ecs::arch::ComponentsIndices::FONT_COMPONENT);
+
+		arch::componentMask playerRequiredMask =
+			(1ull << ecs::arch::ComponentsIndices::PLAYER_TAG_COMPONENT);
 	};
 } // namespace GLVM::ecs
 

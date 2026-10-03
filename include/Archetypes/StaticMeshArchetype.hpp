@@ -63,6 +63,7 @@ namespace GLVM::ecs::arch {
 			componentIds[6] = ComponentsIndices::ROTATION_COMPONENT;
 			componentIds[7] = ComponentsIndices::STATIC_MESH_TAG_COMPONENT;
 			componentCount = 8;
+			static_assert( STATIC_MESH_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 }; // namespace GLVM::ecs::arch

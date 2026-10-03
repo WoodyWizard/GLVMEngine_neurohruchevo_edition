@@ -10,7 +10,6 @@
 #include "VertexMath.hpp"
 #include "Components/TransformComponent.hpp"
 #include "ArchetypeECS/ArchECS_Utils.hpp"
-#include <print>
 
 namespace GLVM::ecs
 {
@@ -57,10 +56,10 @@ namespace GLVM::ecs
 		point2D<int> determineActualIntersectionSlot( components::transform* crosshairTransformComponent, components::transform* inventoryTransformComponent,
 												 const float inventorySlotScale, const float inventorySlotHalfScale );
 
-		bool          isInventoryOpened;
-		int*          isItemDraged;
-		bool*         isLeftMouseButtonReleased;
-		bool          isLeftMouseButtonPressed;
+		bool          isInventoryOpened         = false;
+		int*          isItemDraged              = nullptr;
+		bool*         isLeftMouseButtonReleased = nullptr;
+		bool          isLeftMouseButtonPressed  = false;
 		float         mouseOffsetX = 0;
 		float         mouseOffsetY = 0;
 		float         aspectRate   = 1.778;                   ///< Multiplier of current aspect rate. For full hd this must be 1920 / 1080

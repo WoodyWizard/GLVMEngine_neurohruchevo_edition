@@ -7,6 +7,7 @@
 #define WAVEFRONT_OBJ_PARSER
 
 #include <string>
+#include <string_view>
 #include "Vector.hpp"
 #include <fstream>
 #include <sstream>
@@ -25,13 +26,26 @@ namespace GLVM::core
 {
     class SVertex
     {
-        float x;
-        float y;
-        float z;
+        float x = 0.0f;
+        float y = 0.0f;
+        float z = 0.0f;
 
 	public:
         float& operator[](const unsigned int _iIndex) {
-            assert(_iIndex < 3 && _iIndex >= 0 && "Wrong index");
+            assert(_iIndex < 3 && "Wrong index");
+            switch(_iIndex) {
+            default:
+            case 0:
+                return x;
+            case 1:
+                return y;
+            case 2:
+                return z;
+            }
+        }
+
+		float operator[](const unsigned int _iIndex) const {
+            assert(_iIndex < 3 && "Wrong index");
             switch(_iIndex) {
             default:
             case 0:
@@ -44,6 +58,8 @@ namespace GLVM::core
         }
     };
 
+	/// One triangle. [0] - position indices, [1] - texture coordinate indices, [2] - normal indices.
+	/// All indices are 0-based and point to existing elements of the parser containers.
     class SFace
     {
         GLVM::core::vector<int> vertexIndex;
@@ -52,7 +68,7 @@ namespace GLVM::core
 
 	public:
         GLVM::core::vector<int>& operator[](const unsigned int _iIndex) {
-            assert(_iIndex < 3 && _iIndex >= 0 && "Wrong index");
+            assert(_iIndex < 3 && "Wrong index");
             switch(_iIndex) {
             default:
             case 0:
@@ -65,7 +81,7 @@ namespace GLVM::core
         }
 
 		const GLVM::core::vector<int>& operator[](const unsigned int _iIndex) const {
-            assert(_iIndex < 3 && _iIndex >= 0 && "Wrong index");
+            assert(_iIndex < 3 && "Wrong index");
             switch(_iIndex) {
             default:
             case 0:
@@ -77,38 +93,39 @@ namespace GLVM::core
             }
         }
     };
-    
+
+	/*
+	  Wavefront .obj reader: v, vt, vn and f records. Supports v, v/vt, v//vn and v/vt/vn face corners,
+	  negative (relative) indices, CRLF line endings, comments and polygons (triangulated as a fan).
+	  Missing texture coordinates get (0, 0), missing normals get the flat face normal.
+	  Malformed data is reported with std::runtime_error.
+	*/
     class CWaveFrontObjParser
     {
-        // static CWaveFrontObjParser* pInstance_;
-        // static std::mutex  Mutex_;
-        
         GLVM::core::vector<SVertex> coordinateVertices_;
         GLVM::core::vector<SVertex> textureVertices_;
 		GLVM::core::vector<SVertex> normals_;
         GLVM::core::vector<SFace> faces_;
 
         std::string sWavefrontObjFileData;
-        const char* pWavefrontObjFileData;
-        unsigned int uiCounter = 0;
-		
+		std::string filePath_;
+		bool isFileRead_ = false;
+
+		[[noreturn]] void ParseError(unsigned int lineNumber, const std::string& message) const;
+		float ParseFloat(std::string_view token, unsigned int lineNumber) const;
+		SVertex ParseVector(const std::vector<std::string_view>& tokens, unsigned int minComponents, unsigned int lineNumber) const;
+		int ResolveIndex(std::string_view token, int elementsCount, unsigned int lineNumber) const;
+
     public:
         CWaveFrontObjParser();
 
-//        static CWaveFrontObjParser* GetInstance(); ///< It possibly to get only one instance of this class whith this method.
-        
         [[nodiscard]] const GLVM::core::vector<SVertex>& getCoordinateVertices() const;
         [[nodiscard]] const GLVM::core::vector<SVertex>& getTextureVertices() const;
 		[[nodiscard]] const GLVM::core::vector<SVertex>& getNormals() const;
         [[nodiscard]] const GLVM::core::vector<SFace>&   getFaces() const;
-        
-        void ReadFile(const char* _filePath);
-        void ParseFile();
-        GLVM::core::vector<vector<char>> Split(const char* _pWaveFrontObjFileData, const char _separator, const char _exitSymbol, unsigned int& _uiCounter);
-        SVertex ParseVertices(GLVM::core::vector<vector<char>> _wordsContainer);
-        SFace ParseFaces(GLVM::core::vector<vector<char>> _wordsContainer);
-        int ParseInteger(GLVM::core::vector<char> _word);
-        float ParseFloating(GLVM::core::vector<char> _word);
+
+        bool ReadFile(const char* _filePath);                 ///< Returns false if the file can't be read
+        void ParseFile();                                      ///< Throws std::runtime_error on malformed data
     };
 }
 

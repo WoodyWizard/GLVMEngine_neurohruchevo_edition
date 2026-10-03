@@ -10,7 +10,10 @@
 #include "IContainer.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <new>
+#include <utility>
 #include "VertexMath.hpp"
 #include <assert.h>
 #include "Iterator.hpp"
@@ -20,52 +23,66 @@ namespace GLVM::core
 	template <class T>
 	class vector;
 
+	/// Half-open iterator: [current, end). It is valid while current < end.
 	template <class T>
 	class VectorIterator : public Iterator<T>
 	{
-		T* begin;
+		T* current;
 		T* end;
-		
+
 	public:
 		VectorIterator(vector<T>& vector) {
-			begin = vector.GetVectorContainer();
-		    end   = vector.GetVectorContainer() + (vector.GetSize() - 1);
+			current = vector.GetVectorContainer();
+			end     = current + vector.GetSize();
 		}
-	
+
 		bool Next() override {
-			if ( ValidStatus() ) {
-				begin += 1;
-				return true;
-			} else
+			if ( !ValidStatus() )
 				return false;
+
+			++current;
+			return ValidStatus();
 		}
 
  		bool ValidStatus() override {
-			return end >= begin;
+			return current != nullptr && current < end;
 		}
-	
+
 		T& Current() override {
-			return *begin;
+			return *current;
 		}
-		
+
 		T& Last() override {
-			return *end;
+			return *(end - 1);
 		}
 	};
-	
+
 	template<class T>
 	class vector : public IContainer
 	{
 		unsigned int size = 0;
 		unsigned int capacity = 0;
-		uint32_t expander = 8;
-		static constexpr uint32_t expanderMultiplayer = 8;
 		unsigned char* rowInnerData = nullptr;
+
+		static constexpr unsigned int minimalCapacity = 8;
+
+		T* Data() { return reinterpret_cast<T*>(rowInnerData); }
+		const T* Data() const { return reinterpret_cast<const T*>(rowInnerData); }
+
+		static unsigned char* Allocate(const unsigned int count);
+		static void Deallocate(unsigned char* data);
+		unsigned int CalculateGrownCapacity(const unsigned int requiredCapacity) const;
+		void Reallocate(const unsigned int newCapacity);
+		template<class U>
+		void PushImpl(U&& item);
+		void DestroyElements();
 	public:
         vector() = default;
         vector(const vector<T>& _vector);
+        vector(vector<T>&& _vector) noexcept;
         ~vector() override;
-		void Push(T item);
+		void Push(const T& item);
+		void Push(T&& item);
 		void Pop();
 		void Swap(T& firstElement, T& secondElement);
 		VectorIterator<T> Find(T& element);
@@ -82,104 +99,185 @@ namespace GLVM::core
 		void clear();
         void Print();
         vector& operator=(const vector<T>& _vector);
+        vector& operator=(vector<T>&& _vector) noexcept;
         bool operator==(const char* string_);
 		bool empty();
 	};
 
+	template <class T>
+	unsigned char* vector<T>::Allocate(const unsigned int count) {
+		if ( count == 0 )
+			return nullptr;
+
+		return static_cast<unsigned char*>(::operator new(static_cast<std::size_t>(count) * sizeof(T)));
+	}
+
+	template <class T>
+	void vector<T>::Deallocate(unsigned char* data) {
+		::operator delete(static_cast<void*>(data));
+	}
+
+	/// Geometric (x2) growth. Computed in 64 bit to avoid overflow of the 32 bit counters.
+	template <class T>
+	unsigned int vector<T>::CalculateGrownCapacity(const unsigned int requiredCapacity) const {
+		uint64_t newCapacity = capacity < minimalCapacity ? minimalCapacity : static_cast<uint64_t>(capacity) * 2;
+		if ( newCapacity < requiredCapacity )
+			newCapacity = requiredCapacity;
+		if ( newCapacity > UINT32_MAX )
+			newCapacity = UINT32_MAX;
+
+		return static_cast<unsigned int>(newCapacity);
+	}
+
+	/// Move all alive elements into a new buffer of newCapacity elements (newCapacity >= size).
+	template <class T>
+	void vector<T>::Reallocate(const unsigned int newCapacity) {
+		unsigned char* newData = Allocate(newCapacity);
+		T* newElements = reinterpret_cast<T*>(newData);
+		T* oldElements = Data();
+		for ( unsigned int i = 0; i < size; ++i ) {
+			new (&newElements[i]) T(std::move(oldElements[i]));
+			oldElements[i].~T();
+		}
+
+		Deallocate(rowInnerData);
+		rowInnerData = newData;
+		capacity = newCapacity;
+	}
+
+	template <class T>
+	void vector<T>::DestroyElements() {
+		T* elements = Data();
+		for ( unsigned int i = 0; i < size; ++i )
+			elements[i].~T();
+
+		size = 0;
+	}
+
     template <class T>
     bool vector<T>::operator==(const char* string_) {
-		char tempSymbol = '2';
-		unsigned int strSize = 0;
-		while(tempSymbol != '\0') {
-			tempSymbol = string_[strSize];
-			++strSize;
-		}
-		
+		const std::size_t strSize = std::strlen(string_);
+		if ( strSize != size )
+			return false;
+
         for (unsigned int i = 0; i < size; ++i) {
-			T& element = *(T*)&rowInnerData[i * sizeof(T)];
-            if (element == string_[i])
-                continue;
-            else
+            if (Data()[i] != string_[i])
                 return false;
         }
 
         return true;
     }
-    
+
     template <class T>
     vector<T>& vector<T>::operator=(const vector<T>& _vector)
     {
         if(this == &_vector)
             return *this;
 
-		for(unsigned int j = 0; j < this->size; ++j) {
-			T& destinationElement = *(T*)&this->rowInnerData[j * sizeof(T)];
-			destinationElement.~T();
+		DestroyElements();
+		if ( _vector.size > capacity ) {
+			Deallocate(rowInnerData);
+			rowInnerData = Allocate(_vector.size);
+			capacity     = _vector.size;
 		}
 
-		delete [] this->rowInnerData;
+		T* elements = Data();
+		const T* sourceElements = _vector.Data();
+        for(unsigned int i = 0; i < _vector.size; ++i)
+			new (&elements[i]) T(sourceElements[i]);
 
-		capacity = _vector.capacity;
-		size     = _vector.size;
-		this->rowInnerData = new unsigned char[capacity * sizeof(T)];
-		
-        for(unsigned int i = 0; i < _vector.size; ++i) {
-			T& sourceElement = *(T*)&_vector.rowInnerData[i * sizeof(T)];
-			new (&rowInnerData[i * sizeof(T)]) T(sourceElement);
-		}
+		size = _vector.size;
+        return *this;
+    }
+
+    template <class T>
+    vector<T>& vector<T>::operator=(vector<T>&& _vector) noexcept
+    {
+        if(this == &_vector)
+            return *this;
+
+		DestroyElements();
+		Deallocate(rowInnerData);
+
+		rowInnerData = _vector.rowInnerData;
+		size         = _vector.size;
+		capacity     = _vector.capacity;
+
+		_vector.rowInnerData = nullptr;
+		_vector.size         = 0;
+		_vector.capacity     = 0;
 
         return *this;
     }
 
     template <class T>
-    vector<T>::vector(const vector<T>& _vector) {
-		size     = _vector.size;
-	    capacity = _vector.size;
-		delete [] this->rowInnerData;
-		this->rowInnerData = new unsigned char[capacity * sizeof(T)];
-		
-        for(unsigned int i = 0; i < _vector.size; ++i) {
-			T& sourceElement = *(T*)&_vector.rowInnerData[i * sizeof(T)];
-			new (&rowInnerData[i * sizeof(T)]) T(sourceElement);
-		}
+    vector<T>::vector(const vector<T>& _vector) : IContainer() {
+		rowInnerData = Allocate(_vector.size);
+		capacity     = _vector.size;
+
+		T* elements = Data();
+		const T* sourceElements = _vector.Data();
+        for(unsigned int i = 0; i < _vector.size; ++i)
+			new (&elements[i]) T(sourceElements[i]);
+
+		size = _vector.size;
     }
-    
+
+    template <class T>
+    vector<T>::vector(vector<T>&& _vector) noexcept : IContainer() {
+		rowInnerData = _vector.rowInnerData;
+		size         = _vector.size;
+		capacity     = _vector.capacity;
+
+		_vector.rowInnerData = nullptr;
+		_vector.size         = 0;
+		_vector.capacity     = 0;
+    }
+
 	template<class T>
 	vector<T>::~vector() {
-		for ( unsigned int i = 0; i < size; ++i) {
-			T& element = *(T*)&rowInnerData[i * sizeof(T)];
-			element.~T();
-		}
-		delete [] rowInnerData;
+		DestroyElements();
+		Deallocate(rowInnerData);
 		rowInnerData = nullptr;
+		capacity     = 0;
+	}
+
+	/// The new element is constructed before the old buffer is released, so pushing
+	/// an element of this same vector (v.Push(v[0])) stays valid during reallocation.
+	template<class T>
+	template<class U>
+	void vector<T>::PushImpl(U&& item) {
+		if ( size == capacity ) {
+			const unsigned int newCapacity = CalculateGrownCapacity(size + 1);
+			unsigned char* newData = Allocate(newCapacity);
+			T* newElements = reinterpret_cast<T*>(newData);
+			new (&newElements[size]) T(std::forward<U>(item));
+
+			T* oldElements = Data();
+			for ( unsigned int i = 0; i < size; ++i ) {
+				new (&newElements[i]) T(std::move(oldElements[i]));
+				oldElements[i].~T();
+			}
+
+			Deallocate(rowInnerData);
+			rowInnerData = newData;
+			capacity     = newCapacity;
+		} else {
+			new (&Data()[size]) T(std::forward<U>(item));
+		}
+
+		++size;
 	}
 
     /// Push element on top of the container.
-    
 	template<class T>
-	void vector<T>::Push(T item) {
-		if(size == capacity) {
-				unsigned char* aTemp_Vector_Container = new unsigned char[(capacity + expander) * sizeof(T)];
-				for(unsigned int i = 0; i < size; ++i) {
-					T& element = *(T*)&rowInnerData[i * sizeof(T)];
-					new (&aTemp_Vector_Container[i * sizeof(T)]) T(element);
-					element.~T();
-				}
-				
-				delete [] rowInnerData;
-				rowInnerData = aTemp_Vector_Container;
+	void vector<T>::Push(const T& item) {
+		PushImpl(item);
+	}
 
-				capacity += expander;
-				expander *= expanderMultiplayer;
-			}
-
-		if( rowInnerData == nullptr ) {
-			capacity = expander;
-			rowInnerData = new unsigned char[capacity * sizeof(T)];
-		}
-		
-		new (&rowInnerData[size * sizeof(T)]) T(item);
-		++size;
+	template<class T>
+	void vector<T>::Push(T&& item) {
+		PushImpl(std::move(item));
 	}
 
 	template <class T>
@@ -187,11 +285,7 @@ namespace GLVM::core
 		if ( size < 1 )
 			return;
 
-		T& element = *(T*)&rowInnerData[(size - 1) * sizeof(T)];
-		// if ( typeid(T).name() == typeid(unsigned int).name() ) {
-		// 	element = 0;                                                     ///< For debug purpouses only!!!
-		// }
-		element.~T();
+		Data()[size - 1].~T();
 		--size;
 	}
 
@@ -203,182 +297,114 @@ namespace GLVM::core
 		if ( &firstElement == &secondElement ) {
 		    return;
 		}
-		
-		T tempElement = firstElement;
-		firstElement  = secondElement;
-		secondElement  = tempElement;
+
+		T tempElement  = std::move(firstElement);
+		firstElement   = std::move(secondElement);
+		secondElement  = std::move(tempElement);
 	}
 
+	/// Returns an iterator that points on the found element. If the element is not found the
+	/// returned iterator is not valid (ValidStatus() == false).
 	template <class T>
 	VectorIterator<T> vector<T>::Find(T& element) {
 		VectorIterator<T> iterator(*this);
-		if ( !iterator.ValidStatus() ) {
-			std::cout << "Vector is empty. Retern iterator with pointer on end" << std::endl;
-			return iterator;
-		}
-
-		do {
+		while ( iterator.ValidStatus() ) {
 			if ( iterator.Current() == element )
 				return iterator;
-		} while ( iterator.Next() );
 
-		std::cout << "Vector dont contain this element" << std::endl;
+			iterator.Next();
+		}
+
 		return iterator;
 	}
-	
-    /// Insert element into chosen cell.
-    
+
+	/// Change number of elements. New elements are value-initialized.
 	template<typename T>
 	void vector<T>::Resize(const unsigned int index)
 	{
 		if ( index < size ) {
-			for(unsigned int j = index; j < size; ++j) {
-				(*(T*)&rowInnerData[j * sizeof(T)]).~T();
-			}
+			T* elements = Data();
+			for(unsigned int j = index; j < size; ++j)
+				elements[j].~T();
 
 			size = index;
 		} else if( index > size ) {
-			if ( index > capacity ) {
-				unsigned char* aTemp_Vector_Container_ = new unsigned char[index * sizeof(T)];
+			if ( index > capacity )
+				Reallocate(CalculateGrownCapacity(index));
 
-				for(unsigned int j = 0; j < size; ++j) {
-					T& element = *(T*)&rowInnerData[j * sizeof(T)];
-					new (&aTemp_Vector_Container_[j * sizeof(T)]) T(element);
-					element.~T();
-				}
-
-				delete [] rowInnerData;
-				rowInnerData = aTemp_Vector_Container_;
-				capacity = index;
-			}
-
-			for ( unsigned int i = size; i < index; ++i) {
-				new (&rowInnerData[i * sizeof(T)]) T{};
-			}
+			T* elements = Data();
+			for ( unsigned int i = size; i < index; ++i)
+				new (&elements[i]) T{};
 
 			size = index;
 		}
 	}
-	
+
+	/// Remove element with shifting of all next elements. Out of range index is ignored.
  	template<class T>
 	void vector<T>::Remove(unsigned int index)
 	{
-		if(size < 1)
+		if ( index >= size )
 			return;
 
+		T* elements = Data();
 		for(unsigned int j = index; j < size - 1; ++j) {
-			T& element = *(T*)&rowInnerData[(j + 1) * sizeof(T)];
-			T& previousElement = *(T*)&rowInnerData[j * sizeof(T)];
-			previousElement.~T();
-			new (&rowInnerData[j * sizeof(T)]) T(element);
+			elements[j].~T();
+			new (&elements[j]) T(std::move(elements[j + 1]));
 		}
 
-		/// FIXME: FOR DEBUG ONLY!
-		// if ( typeid(T).name() == typeid(unsigned int).name() ) {
-		// 	T& element = *(T*)&rowInnerData[(size - 1) * sizeof(T)];
-		// 	element = 0;                                                     ///< For debug purpouses only!!!
-		// }
-		
+		elements[size - 1].~T();
 	    --size;
 	}
-    
+
 	template<class T>
 	void vector<T>::RemoveFirstItem()
 	{
-		--size;				
-		if(size == 0) {
-			delete [] this->rowInnerData;
-			this->rowInnerData = nullptr;
-			return;
-		}
-		
-		unsigned char* aTemp_Vector_Container = new unsigned char[(size + 1) * sizeof(T)];
-		for(unsigned int i = 0; i < size + 1; ++i) {
-			T& element = *(T*)&rowInnerData[i * sizeof(T)];
-			new (&aTemp_Vector_Container[i * sizeof(T)]) T(element);
-			element.~T();
-		}
-
-		delete [] this->rowInnerData;
-		this->rowInnerData = nullptr;
-
-		rowInnerData = new unsigned char[capacity * sizeof(T)];
-        for(unsigned int i = 0; i < size; ++i) {
-			T& sourceElement = *(T*)&aTemp_Vector_Container[(i + 1) * sizeof(T)];
-			new (&rowInnerData[i * sizeof(T)]) T(sourceElement);
-		}
-
-		delete [] aTemp_Vector_Container;
-		aTemp_Vector_Container = nullptr;
+		Remove(0);
 	}
-	
-	template<class T>
-	T& vector<T>::GetFirstItem() { return *(T*)&rowInnerData[0]; }
 
 	template<class T>
-	T& vector<T>::GetHead() { return *(T*)&rowInnerData[(size - 1) * sizeof(T)]; }
+	T& vector<T>::GetFirstItem() { return Data()[0]; }
 
 	template<class T>
-	T* vector<T>::GetVectorContainer() { return (T*)rowInnerData; }
+	T& vector<T>::GetHead() { return Data()[size - 1]; }
+
+	template<class T>
+	T* vector<T>::GetVectorContainer() { return Data(); }
 
 	template<typename T>
 	unsigned int vector<T>::GetSize() const { return size; }
-	
+
 	template<typename T>
 	int vector<T>::GetCapacity() { return capacity; }
 	template<typename T>
 	const T& vector<T>::operator[](const unsigned int _iIndex) const {
 //		assert( _iIndex < size );
-		return reinterpret_cast<const T*>(rowInnerData)[_iIndex];
+		return Data()[_iIndex];
 	}
 	template<typename T>
 	T& vector<T>::operator[](const unsigned int _iIndex) {
 //		assert( _iIndex < size );
-		return reinterpret_cast<T*>(rowInnerData)[_iIndex];
+		return Data()[_iIndex];
 	}
 
+	/// Destroy all elements. Allocated memory is kept for reuse.
 	template<typename T>
 	void vector<T>::clear() {
-		if(size < 1)
-			return;
-
-		// /// FIXME: FOR DEBUG ONLY!
-		// if ( typeid(T).name() == typeid(unsigned int).name() ) {
-		// 	for ( unsigned int i = 0; i < capacity; ++i ) {
-		// 		T& element = *(T*)&rowInnerData[i * sizeof(T)];
-		// 		element = 0;                                                     ///< For debug purpouses only!!!
-		// 	}
-		// }
-
-		for(unsigned int i = 0; i < size; ++i) {
-			T& element = *(T*)&rowInnerData[i * sizeof(T)];
-			element.~T();
-		}
-
-		delete [] this->rowInnerData;
-		this->rowInnerData = nullptr;
-		
-		/// FIXME: DEBUG ONLY!
-		// unsigned int sizeOfType = sizeof(T);
-		// for (unsigned int j = 0; j < capacity * sizeOfType; ++j) {
-		// 	*(unsigned char*)&rowInnerData[j] = 0;
-		// }
-		
-		size     = 0;
-//		capacity = 0;
+		DestroyElements();
 	}
 
  	template<class T>
 	bool vector<T>::empty() { return size == 0; }
-	
+
     template<class T>
     void vector<T>::Print()
     {
         for(unsigned int i = 0; i < size; ++i)
-            std::cout << *(T*)&rowInnerData[i * sizeof(T)] << std::endl;
+            std::cout << Data()[i] << std::endl;
 
         std::cout << "End of container" << std::endl;
     }
 }
-    
-#endif 
+
+#endif

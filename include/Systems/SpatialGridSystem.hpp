@@ -20,6 +20,8 @@ namespace GLVM::ecs {
 		arch::Archetype* cachedArchetypes[32];
 		uint32_t cachedArchetypesNumber = 0;
 		bool isInitialized = false;
+		core::vector<u32> occupiedCells;              ///< Flat indices of cells filled on the previous update. Only they are cleared
+		bool isOutOfGridReported = false;
 		
 		struct SpatialGridComponentsView {
 			components::transform* transforms = nullptr;

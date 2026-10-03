@@ -41,11 +41,34 @@
 #include "PGA.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <map>
 #include <random>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 int main()
 {
+	/// Resources are referenced as "../<dir>/..." relative to the build directory, so work from the executable's directory
+	[]() {
+		std::error_code error;
+#ifdef _WIN32
+		wchar_t executablePath[MAX_PATH];
+		const DWORD length = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+		if ( length == 0 || length == MAX_PATH )
+			return;
+		const std::filesystem::path executable(executablePath);
+#else
+		const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", error);
+		if ( error )
+			return;
+#endif
+		std::filesystem::current_path(executable.parent_path(), error);
+		if ( error )
+			std::cerr << "Warning: can't change working directory to " << executable.parent_path() << ": " << error.message() << std::endl;
+	}();
+
 	// GLVM::core::pga::plane plane;
 	// GLVM::core::pga::point point = !plane;
 	// std::cout << point.w << std::endl;
@@ -302,7 +325,7 @@ int main()
 	arch::DirectionalLightArchetype* directionalLightArch = static_cast<arch::DirectionalLightArchetype*>(directionalLightLocation.arch);
 	const uint32_t directionalLightIndex = directionalLightLocation.index;
 	directionalLightArch->directionalLights[directionalLightIndex] = { .position = { 0.0f, 20.0f, 15.0f },
-		.direction = { 5.0f, 0.0f, 7.0f}, .ambient = { 0.05f, 0.05f, 0.05f }, .diffuse = {0.4f, 0.4f, 0.4f},
+		.direction = { 5.0f, -20.0f, -8.0f}, .ambient = { 0.05f, 0.05f, 0.05f }, .diffuse = {0.4f, 0.4f, 0.4f},  ///< Towards (5, 0, 7)
 		.specular = {0.1f, 0.1f, 0.1f}};
 	directionalLightArch->transforms[directionalLightIndex]    = { .position = { 0.0f, 20.0f, 15.0f }, .scale = 0.1f };
 	directionalLightArch->meshes[directionalLightIndex].handle = hyperCubeHandle_GLTF;
@@ -330,7 +353,7 @@ int main()
 	arch::SpotLightArchetype* spotLightArch = static_cast<arch::SpotLightArchetype*>(spotLightLocation.arch);
 	const uint32_t spotLightIndex = spotLightLocation.index;
 	spotLightArch->spotLights[spotLightIndex]    = { .position = { 1.0f, 17.0f, -5.0f },
-		.direction = { 0.0f, -1.0f, 3.0f }, .cutOff = 32.5f, .outerCutOff = 37.5f, .ambient = { 0.05f, 0.05f, 0.05f },
+		.direction = { -1.0f, -18.0f, 8.0f }, .cutOff = 32.5f, .outerCutOff = 37.5f, .ambient = { 0.05f, 0.05f, 0.05f },  ///< Towards (0, -1, 3)
 		.diffuse = { 3.8f, 3.8f, 3.8f }, .specular = { 5.0f, 5.0f, 5.0f }, .constant = 1.0f, .linear = 0.09f,
 		.quadratic = 0.032f };
 	spotLightArch->transforms[spotLightIndex]    = { .position = { 1.0f, 17.0f, -5.0f }, .scale = 0.2f };
@@ -405,7 +428,7 @@ int main()
 	frustumVertices1.Push( vec3( 1.0, -1.0, 0.5) );
 	frustumVertices1.Push( vec3( -1.0, -1.0, 0.5) );
 	
-	vectorArch->materials[vectorIndex]     = { .diffuseTextureID_ = grayTextureHandle, .specularTextureID_ = grayTextureHandle,
+	frustumArch1->materials[frustumIndex1] = { .diffuseTextureID_ = grayTextureHandle, .specularTextureID_ = grayTextureHandle,
 		.ambient = { 0.05f, 0.05f, 0.0f }, .shininess = 128.0f * 0.078125f }; 
 	
     ///< Game rendering loop

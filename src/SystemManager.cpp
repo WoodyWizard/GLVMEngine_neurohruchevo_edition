@@ -14,8 +14,9 @@ namespace GLVM::ecs
     
     CSystemManager::~CSystemManager()
     {
-        delete pInstance_;
-        pInstance_ = nullptr;
+		/// The destructor is called by "delete pInstance_", so deleting pInstance_ here again would recurse
+		if ( pInstance_ == this )
+			pInstance_ = nullptr;
     }
     
     CSystemManager* CSystemManager::GetInstance()

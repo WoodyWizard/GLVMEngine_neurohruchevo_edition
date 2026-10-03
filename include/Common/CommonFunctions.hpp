@@ -25,10 +25,13 @@ namespace GLVM::core {
 		const core::MeshAxisMaxAbsoluteValues& backtrackingMeshAxisMaxAbsoluteValues,
 		const core::MeshAxisMaxAbsoluteValues& comparedMeshAxisMaxAbsoluteValues);
 
-	core::vector<vec3> computeBoxCornerBoundPoints(
-		const core::MeshAxisMaxAbsoluteValues entityChunkBounds,
-		vec3 entityPosition,
-		const float scale );
+	/// Compute left bottom back (minPoint) and right upper front (maxPoint) corners of entity bounding box.
+	void computeBoxCornerBounds(
+		const core::MeshAxisMaxAbsoluteValues& entityChunkBounds,
+		const vec3& entityPosition,
+		const float scale,
+		vec3& minPoint,
+		vec3& maxPoint );
 	
 	template< typename T >
 	bool isExist( const core::vector<T>& array, const T& element ) {
@@ -41,12 +44,18 @@ namespace GLVM::core {
 	}
 
 	void setMeshBounds( MeshAxisLimitingValues meshAxisLimitingValues );
-	void CreateProjectile(const vec3& projectilePosition,
-							 const vec3& projectileForward,
-							 const ecs::components::MeshHandle& meshHandle,
-							 const ecs::components::material& material,
-							 const ecs::components::damage& damage,
-							 const ecs::arch::EntityLocation& projectileLocation);
+	/// Projectile is spawned at projectileSpawnOffset units from origin position along the direction.
+	constexpr float projectileSpawnOffset = 1.0f;
+	/// Seconds of flight after which a projectile is destroyed
+	constexpr float projectileLifeTime    = 5.0f;
+
+	void CreateProjectile(const vec3& originPosition,
+						  const vec3& direction,
+						  const ecs::components::MeshHandle& meshHandle,
+						  const ecs::components::material& material,
+						  const ecs::components::damage& damage,
+						  const unsigned int ownerId,
+						  const ecs::arch::EntityLocation& projectileLocation);
 }; ///< namespace GLVM::core
 
 #endif

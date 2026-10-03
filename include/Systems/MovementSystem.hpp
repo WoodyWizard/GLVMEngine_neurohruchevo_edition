@@ -33,13 +33,8 @@ namespace GLVM::ecs
 	class CMovementSystem : public ISystem
 	{
 	public:
-		float deltaFrameTime;
-		float gravity;
+		float deltaFrameTime = 0.0f;
         core::CStack& inputStack;
-		float prev_delta_x       = 0.0f;
-		float prev_X             = 0.0f;
-		float current_X          = 0.0f;
-		vec3  prev_forward;
 
 		uint32_t playerArchetypesNumber = 0;
 		uint32_t rigidBodyContainedArchetypesNumber = 0;

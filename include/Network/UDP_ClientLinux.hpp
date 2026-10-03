@@ -13,13 +13,16 @@ namespace GLVM::core
 		unsigned short port;
 		const char*    serverIP;
 		static const unsigned int  maxBufferSize = 1024;
-		int            socketFileDescriptor;
+		static const int receiveTimeoutSeconds = 2;
+		int            socketFileDescriptor = -1;
 		sockaddr_in    serverAddress;
 		const char*    message = "Hello, UDP server!";
 		char           buffer[maxBufferSize];
 
 		UDP_ClientLinux( unsigned long port = 8080, const char* serverIP = "127.0.0.1" );
-		char* receive();
+		UDP_ClientLinux( const UDP_ClientLinux& ) = delete;
+		UDP_ClientLinux& operator=( const UDP_ClientLinux& ) = delete;
+		char* receive();                                   ///< Waits up to receiveTimeoutSeconds; nullptr on timeout/error/foreign sender
 		void response();
 		~UDP_ClientLinux();
 	};

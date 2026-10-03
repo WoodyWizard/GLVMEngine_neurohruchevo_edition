@@ -1941,6 +1941,8 @@ inline Frustum extractFrustum( const mat4& vp ) {
 
 	for ( plane& plane : frustum.planes ) {
 		const float length = plane.normal.Length();
+		if ( length <= 1e-6f )              ///< Degenerate view-projection matrix: leave the plane unnormalized
+			continue;
 		plane.normal   = Normalize( plane.normal );
 		plane.distance = plane.distance / length;
 	}

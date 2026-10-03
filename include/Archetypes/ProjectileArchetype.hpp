@@ -79,6 +79,7 @@ namespace GLVM::ecs::arch {
 			componentIds[8] = ComponentsIndices::FONT_COMPONENT;
 			componentIds[9] = ComponentsIndices::PROJECTILE_TAG_COMPONENT;
 			componentCount = 10;
+			static_assert( PROJECTILE_ARCH_CHUNK_SIZE <= CAPACITY, "Archetype component arrays are larger than entities array" );
 		}
 	};
 };
