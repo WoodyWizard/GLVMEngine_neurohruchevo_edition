@@ -1567,7 +1567,8 @@ namespace GLVM::core
 			const auto writeTime = std::filesystem::last_write_time( modelFilePath, error );
 			if ( error )
 				return "";
-			return std::to_string( fileSize ) + ":" + std::to_string( writeTime.time_since_epoch().count() );
+			/// libc++ (llvm-mingw) stores file times in __int128, which std::to_string doesn't take.
+			return std::to_string( fileSize ) + ":" + std::to_string( static_cast<long long>( writeTime.time_since_epoch().count() ) );
 		}
 
 		std::string firstToken( const std::string& line ) {
