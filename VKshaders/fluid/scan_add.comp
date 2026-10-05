@@ -1,0 +1,12 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Adds the scanned block totals to the block local prefix sums: cellData becomes the first sorted particle of every cell.
+
+layout(local_size_x = 256) in;
+#include "pbf_common.glsl"
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i < params.counts.x )
+		cellData[i] += blockSums[i / 1024u];
+}

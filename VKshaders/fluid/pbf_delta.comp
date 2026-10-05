@@ -1,0 +1,86 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Position correction dp_i = 1/rho_0 * sum_j (lambda_i + lambda_j + s_corr) grad W(p_i - p_j), then collisions:
+// rigid bodies (the push out is transferred to the body as an impulse) and the domain walls.
+
+layout(local_size_x = 128) in;
+#include "pbf_common.glsl"
+
+void addBodyImpulse( uint body, vec3 linear, vec3 angular ) {
+	const float scale = params.bodyParams.y;
+	const uint base = body * 8u;
+	atomicAdd( bodyImpulses[base + 0u], int( round( linear.x * scale ) ) );
+	atomicAdd( bodyImpulses[base + 1u], int( round( linear.y * scale ) ) );
+	atomicAdd( bodyImpulses[base + 2u], int( round( linear.z * scale ) ) );
+	atomicAdd( bodyImpulses[base + 3u], int( round( angular.x * scale ) ) );
+	atomicAdd( bodyImpulses[base + 4u], int( round( angular.y * scale ) ) );
+	atomicAdd( bodyImpulses[base + 5u], int( round( angular.z * scale ) ) );
+}
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i >= particleCount() )
+		return;
+
+	const vec4 predicted = predictedIn[i];
+	const vec3 position = predicted.xyz;
+	const float h2 = kernelRadius() * kernelRadius();
+	const float lambdaI = lambdas[i];
+
+	vec3 delta = vec3( 0.0 );
+	const uint count = neighborCounts[i];
+	for ( uint slot = 0u; slot < count; ++slot ) {
+		const uint j = neighborAt( i, slot );
+		const vec3 r = position - predictedIn[j].xyz;
+		const float r2 = dot( r, r );
+		if ( r2 >= h2 )
+			continue;
+		/// Artificial pressure against clustering (tensile instability): s_corr = -k (W / W(dq))^4 where the density
+		/// constraint of the pair is active (lambda < 0). Between free surface particles nothing balances it (unilateral
+		/// constraint): there only its part closer than dq acts, -k ((W / W(dq))^4 - 1), it still separates clusters
+		/// but does not push particles at the rest spacing apart and blow jets, sheets and drops into spray.
+		const float lambdaJ = lambdas[j];
+		const float ratio = poly6( r2 ) * params.solver.z;
+		const float ratio4 = (ratio * ratio) * (ratio * ratio);
+		const float correction = -params.solver.y * (lambdaI + lambdaJ < 0.0 ? ratio4 : max( ratio4 - 1.0, 0.0 ));
+		delta += (lambdaI + lambdaJ + correction) * spikyGradient( r, sqrt( r2 ) );
+	}
+	delta *= params.kernel.w;
+
+	const vec3 low  = position - params.domainMinH.xyz;
+	const vec3 high = params.domainMaxInvH.xyz - position;
+	for ( int axis = 0; axis < 3; ++axis ) {
+		vec3 direction = vec3( 0.0 );
+		direction[axis] = 1.0;
+		delta += lambdaI * (wallDensity( low[axis] ).y - wallDensity( high[axis] ).y) * direction;
+	}
+
+	/// Very large corrections come from badly compressed states, limiting them keeps the solver stable.
+	const float maximumDelta = 0.25 * kernelRadius();
+	const float deltaLength = length( delta );
+	if ( deltaLength > maximumDelta )
+		delta *= maximumDelta / deltaLength;
+	vec3 corrected = position + delta;
+
+	/// Rigid bodies: push the particle out to the surface (particle radius away), the body gets the opposite impulse.
+	const float radius = params.solver.w;
+	const uint bodyCount = uint( params.bodyParams.x );
+	for ( uint b = 0u; b < bodyCount; ++b ) {
+		const Body body = bodies[b];
+		if ( body.positionType.w < 0.5 || distance( corrected, body.positionType.xyz ) > body.halfExtents.w + radius )
+			continue;
+		vec3 normal;
+		const float surfaceDistance = bodyDistance( body, corrected, normal );
+		if ( surfaceDistance >= radius )
+			continue;
+		const vec3 push = (radius - surfaceDistance) * normal;
+		corrected += push;
+		if ( body.velocityInvMass.w > 0.0 ) {
+			const vec3 impulse = -params.bodyParams.z * push / params.gravityDt.w;
+			addBodyImpulse( b, impulse, cross( corrected - body.positionType.xyz, impulse ) );
+		}
+	}
+
+	corrected = clamp( corrected, params.domainMinH.xyz + radius, params.domainMaxInvH.xyz - radius );
+	predictedOut[i] = vec4( corrected, predicted.w );
+}

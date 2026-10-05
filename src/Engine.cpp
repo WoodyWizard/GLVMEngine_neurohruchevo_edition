@@ -59,6 +59,7 @@
 //#include <wayland-client-core.h>
 #include <fstream>
 #include <filesystem>
+#include "Fluid/FluidTank.hpp"
 
 
 /*******************************************************************
@@ -236,6 +237,7 @@ namespace GLVM::core
 		initializeFontData();
 		initializeMathObjectsData();
 		vulkanRenderer->run();
+		createFluidTank();
 //		vulkanRenderer->Window->Input_Stack_    = &Input_Stack_;		
 
 #ifdef __linux__
@@ -343,6 +345,7 @@ namespace GLVM::core
 			itemSystem->mouseOffsetX                  = hud_screen_x;
 			itemSystem->mouseOffsetY                  = hud_screen_y;
 			pSystem_Manager->Update();
+			updateFluidTank();
 			vulkanRenderer->levelGeneratedVertices    = procuduralLevelGeneratingSystem->levelGeneratedVertices;
 			vulkanRenderer->levelGeneratedIndices     = procuduralLevelGeneratingSystem->levelGeneratedIndices;
 			procuduralLevelGeneratingSystem->levelGeneratedVertices.clear();
@@ -395,6 +398,58 @@ namespace GLVM::core
 
 		playerModelYawOffset = playerTransform.pitch - directionAngleXZ( playerTransform.previousFrameForward );
 		isPlayerModelYawOffsetInitialized = true;
+	}
+
+	/*
+	  Water tank of the level (fluid module, include/Fluid/FluidTank.hpp): a glass tank with a wave making piston and
+	  floating beach balls, on the floor of the first level chunk in front of the start position of the player.
+	  Discrete GPUs get finer particles.
+	*/
+	void Engine::createFluidTank() {
+		fluid::FluidTankDescription tank;
+		tank.floorCenter     = { 5.5f, 1.0f, -4.6f };          ///< The floor of the first chunk is at y = 1
+		tank.innerSize       = { 3.6f, 1.5f, 1.8f };
+		tank.waterDepth      = 0.6f;
+		tank.isHighQuality   = vulkanRenderer->isDiscreteGpu();
+		tank.particleSpacing = tank.isHighQuality ? 0.04f : 0.055f;
+		vulkanRenderer->createFluidTank( tank );
+	}
+
+	/// The player can't walk into the tank; projectiles in the water push it as kinematic spheres (splashes).
+	void Engine::updateFluidTank() {
+		namespace cm   = GLVM::ecs::components;
+		namespace arch = GLVM::ecs::arch;
+		fluid::FluidTank* tank = vulkanRenderer->fluidTank.get();
+		if ( tank == nullptr )
+			return;
+		vulkanRenderer->fluidFrameTime = deltaFrameTime;
+
+		playerArchetypesNumber = 0;
+		arch::world.searchCacheArchetypes( playerRequiredMask, cachedPlayerArchetypes, playerArchetypesNumber );
+		for ( uint32_t n = 0; n < playerArchetypesNumber; ++n ) {
+			cm::transform* transforms = (cm::transform*)cachedPlayerArchetypes[n]->components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
+			for ( uint32_t x = 0; x < cachedPlayerArchetypes[n]->entityCount; ++x ) {
+				fluid::Vec3 position = { transforms[x].position[0], transforms[x].position[1], transforms[x].position[2] };
+				if ( tank->pushOut( position, 0.5f ) )
+					transforms[x].position = vec3( position.x, position.y, position.z );
+			}
+		}
+
+		constexpr float projectileSpeed = 5.5f * 2.5f;                   ///< ProjectileSystem: 5.5 * 2.5 units per second along forward
+		std::vector<fluid::FluidSplasher> splashers;
+		projectileActorsArchetypesNumber = 0;
+		arch::world.searchCacheArchetypes( projectileRequiredMask, cachedProjectileActorsArchetypes, projectileActorsArchetypesNumber );
+		for ( uint32_t n = 0; n < projectileActorsArchetypesNumber; ++n ) {
+			const cm::transform* transforms = (cm::transform*)cachedProjectileActorsArchetypes[n]->components[arch::ComponentsIndices::TRANSFORM_COMPONENT];
+			for ( uint32_t x = 0; x < cachedProjectileActorsArchetypes[n]->entityCount; ++x ) {
+				const fluid::Vec3 position = { transforms[x].position[0], transforms[x].position[1], transforms[x].position[2] };
+				if ( !tank->isInsideWater( position ) )
+					continue;
+				const vec3 direction = Normalize( transforms[x].forward );
+				splashers.push_back( { position, fluid::Vec3{ direction[0], direction[1], direction[2] } * projectileSpeed, 0.18f } );
+			}
+		}
+		tank->setSplashers( splashers );
 	}
 
 	/// Aspect rate of the swapchain. Renderer updates it when the swapchain is recreated (window resize).

@@ -7,7 +7,7 @@ GLVM_COMMON_SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
 	./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
 	./src/Gltf/GltfLoader.cpp ./src/Gltf/GltfEvaluate.cpp ./src/Gltf/GltfImage.cpp ./src/Gltf/GltfEngineAdapter.cpp \
 	./src/ProceduralLevelGeneratingSystem.cpp ./src/ThreadPool.cpp \
-	./src/Common/CommonFunctions.cpp \
+	./src/Common/CommonFunctions.cpp ./src/Common/PngWriter.cpp \
 	./src/GraphicAPI/Vulkan.cpp ./src/GraphicAPI/VkBuilders.cpp \
 	./src/GraphicAPI/RenderData.cpp ./src/GraphicAPI/VkDebugUtils.cpp \
 	./src/ArchetypedECS/ArchECS_Utils.cpp ./src/ArchetypedECS/ArchECS_World.cpp \
@@ -16,7 +16,8 @@ GLVM_COMMON_SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
 	./src/Systems/MovementSystem.cpp ./src/Systems/ProjectileSystem.cpp ./src/Systems/DamageSystem.cpp \
 	./src/Systems/EnemySystem.cpp ./src/Systems/ItemSystem.cpp ./src/Systems/InventorySystem.cpp \
 	./src/Systems/SpatialGridSystem.cpp \
-	./src/UnixApi/WaylandVariables.cpp
+	./src/UnixApi/WaylandVariables.cpp \
+	$(GLVM_FLUID_SOURCES) ./src/Fluid/FluidTank.cpp
 
 # Textures embedded as C arrays
 GLVM_TEXTURE_SOURCES = ./textures/chelik.cpp ./textures/witch.cpp ./textures/crosshair.cpp ./textures/gray.cpp \
@@ -33,3 +34,19 @@ GLVM_LINUX_C_SOURCES = ./xdg-shell-protocol.c ./pointer-constraints-unstable-v1-
 
 GLVM_WINDOWS_SOURCES = ./src/WinApi/ChronoWin.cpp ./src/WinApi/SoundEngineWaveform.cpp \
 	./src/WinApi/WindowWinVulkan.cpp
+
+# Fluid module (include/Fluid): GPU liquid simulation and screen space fluid rendering; the game also links
+# FluidTank (the water tank of the level)
+GLVM_FLUID_SOURCES = ./src/Fluid/GpuContext.cpp ./src/Fluid/FluidSimulation.cpp ./src/Fluid/FluidRenderer.cpp
+
+# Fluid demo (build/fluidDemo): the module, the demo and the engine window classes with the globals they use,
+# plus the window sources of the platform
+GLVM_FLUID_DEMO_SOURCES = $(GLVM_FLUID_SOURCES) ./src/FluidDemo/FluidDemoMain.cpp ./src/FluidDemo/DemoRenderer.cpp \
+	./src/FluidDemo/DemoPlatform.cpp ./src/Common/PngWriter.cpp \
+	./src/Event.cpp ./src/UnixApi/WaylandVariables.cpp ./textures/fontAtlas.cpp
+GLVM_FLUID_DEMO_LINUX_SOURCES = ./src/UnixApi/WindowWaylandVulkan.cpp ./src/UnixApi/WindowXVulkan.cpp \
+	./src/UnixApi/WindowXCBVulkan.cpp
+GLVM_FLUID_DEMO_WINDOWS_SOURCES = ./src/WinApi/WindowWinVulkan.cpp
+
+# Fluid tests (build/fluidTests, headless): GPU against a CPU reference, physical checks, benchmark
+GLVM_FLUID_TEST_SOURCES = $(GLVM_FLUID_SOURCES) ./tests/FluidTests.cpp

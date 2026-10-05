@@ -308,6 +308,8 @@ namespace GLVM::core
 		ecs::components::MeshHandle LoadMeshFromFile_GLTF(const char* pathToMesh);
 		ecs::components::MeshHandle LoadMesh();
 		void FPScounter();
+		void createFluidTank();
+		void updateFluidTank();
 		void GameKill();
 	};
 }

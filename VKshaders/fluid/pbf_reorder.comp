@@ -1,0 +1,17 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Counting sort scatter: particles of a cell become contiguous, so neighbor searches read memory in order.
+
+layout(local_size_x = 128) in;
+#include "pbf_common.glsl"
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i >= particleCount() )
+		return;
+	const uint destination = cellData[particleCell[i]] + particleOffset[i];
+	positionsOut[destination]  = positionsIn[i];
+	velocitiesOut[destination] = velocitiesIn[i];
+	colorsOut[destination]     = colorsIn[i];
+	predictedOut[destination]  = predictedIn[i];
+}

@@ -1,0 +1,67 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Work efficient (Blelloch) exclusive prefix sum of 1024 elements per workgroup.
+// mode 0: scans the cell counts block by block and stores every block total in blockSums.
+// mode 1: scans blockSums in place (one workgroup, at most 1024 blocks).
+
+layout(local_size_x = 512) in;
+#include "pbf_common.glsl"
+
+layout(push_constant) uniform Push { uint mode; } push;
+
+shared uint temp[1024];
+
+uint loadElement( uint index ) {
+	if ( push.mode == 0u )
+		return index < params.counts.x ? cellData[index] : 0u;
+	return index < params.counts.y ? blockSums[index] : 0u;
+}
+
+void storeElement( uint index, uint value ) {
+	if ( push.mode == 0u ) {
+		if ( index < params.counts.x )
+			cellData[index] = value;
+	} else if ( index < params.counts.y ) {
+		blockSums[index] = value;
+	}
+}
+
+void main() {
+	const uint t = gl_LocalInvocationID.x;
+	const uint base = gl_WorkGroupID.x * 1024u;
+	temp[2u * t]      = loadElement( base + 2u * t );
+	temp[2u * t + 1u] = loadElement( base + 2u * t + 1u );
+
+	uint offset = 1u;
+	for ( uint d = 512u; d > 0u; d >>= 1u ) {                       // Up sweep: partial sums in a balanced tree
+		barrier();
+		if ( t < d ) {
+			const uint ai = offset * (2u * t + 1u) - 1u;
+			const uint bi = offset * (2u * t + 2u) - 1u;
+			temp[bi] += temp[ai];
+		}
+		offset <<= 1u;
+	}
+
+	if ( t == 0u ) {
+		if ( push.mode == 0u )
+			blockSums[gl_WorkGroupID.x] = temp[1023];
+		temp[1023] = 0u;
+	}
+
+	for ( uint d = 1u; d < 1024u; d <<= 1u ) {                      // Down sweep: exclusive sums
+		offset >>= 1u;
+		barrier();
+		if ( t < d ) {
+			const uint ai = offset * (2u * t + 1u) - 1u;
+			const uint bi = offset * (2u * t + 2u) - 1u;
+			const uint value = temp[ai];
+			temp[ai] = temp[bi];
+			temp[bi] += value;
+		}
+	}
+	barrier();
+
+	storeElement( base + 2u * t, temp[2u * t] );
+	storeElement( base + 2u * t + 1u, temp[2u * t + 1u] );
+}

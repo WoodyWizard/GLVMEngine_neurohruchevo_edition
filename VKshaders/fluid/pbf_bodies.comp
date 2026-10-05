@@ -1,0 +1,138 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Rigid bodies (one invocation, there are few bodies): applies the impulses the fluid gave them this substep,
+// gravity and damping, integrates, then resolves contacts with the domain walls and between bodies.
+// Buoyancy is not modelled explicitly: it is the sum of the particle pressure impulses.
+
+layout(local_size_x = 1) in;
+#include "pbf_common.glsl"
+
+mat3 rotationMatrix( vec4 q ) {
+	return mat3( quaternionRotate( q, vec3( 1.0, 0.0, 0.0 ) ),
+				 quaternionRotate( q, vec3( 0.0, 1.0, 0.0 ) ),
+				 quaternionRotate( q, vec3( 0.0, 0.0, 1.0 ) ) );
+}
+
+vec4 quaternionMultiply( vec4 a, vec4 b ) {
+	return vec4( a.w * b.xyz + b.w * a.xyz + cross( a.xyz, b.xyz ), a.w * b.w - dot( a.xyz, b.xyz ) );
+}
+
+/// Contact of a body point (offset r from the center) with a plane of normal n: restitution and Coulomb friction impulses.
+void contactImpulse( inout vec3 velocity, inout vec3 angularVelocity, float inverseMass, mat3 inverseInertia, vec3 r, vec3 n ) {
+	const vec3 pointVelocity = velocity + cross( angularVelocity, r );
+	const float normalSpeed = dot( pointVelocity, n );
+	if ( normalSpeed >= 0.0 )
+		return;
+	const float restitution = normalSpeed < -0.5 ? params.bodyParams.w : 0.0;          // No bouncing at small speeds (resting)
+	const vec3 rn = cross( r, n );
+	const float normalMass = inverseMass + dot( n, cross( inverseInertia * rn, r ) );
+	const float normalImpulse = -(1.0 + restitution) * normalSpeed / normalMass;
+	vec3 impulse = normalImpulse * n;
+
+	const vec3 tangentVelocity = pointVelocity - normalSpeed * n;
+	const float tangentSpeed = length( tangentVelocity );
+	if ( tangentSpeed > 1e-6 ) {
+		const vec3 t = tangentVelocity / tangentSpeed;
+		const vec3 rt = cross( r, t );
+		const float tangentMass = inverseMass + dot( t, cross( inverseInertia * rt, r ) );
+		impulse -= t * min( tangentSpeed / tangentMass, 0.5 * normalImpulse );
+	}
+	velocity += impulse * inverseMass;
+	angularVelocity += inverseInertia * cross( r, impulse );
+}
+
+void main() {
+	const float dt = params.gravityDt.w;
+	const uint count = uint( params.bodyParams.x );
+	const float scale = params.bodyParams.y;
+	const vec3 wallMin = params.domainMinH.xyz;
+	const vec3 wallMax = params.domainMaxInvH.xyz;
+
+	for ( uint b = 0u; b < count; ++b ) {
+		const uint base = b * 8u;
+		const vec3 linearImpulse  = vec3( bodyImpulses[base + 0u], bodyImpulses[base + 1u], bodyImpulses[base + 2u] ) / scale;
+		const vec3 angularImpulse = vec3( bodyImpulses[base + 3u], bodyImpulses[base + 4u], bodyImpulses[base + 5u] ) / scale;
+		for ( uint k = 0u; k < 8u; ++k )
+			bodyImpulses[base + k] = 0;
+
+		Body body = bodies[b];
+		const float inverseMass = body.velocityInvMass.w;
+		if ( body.positionType.w < 0.5 || inverseMass <= 0.0 )
+			continue;
+
+		const mat3 rotation = rotationMatrix( body.rotation );
+		const mat3 inverseInertia = rotation * mat3( body.inverseInertia.x, 0.0, 0.0,
+													 0.0, body.inverseInertia.y, 0.0,
+													 0.0, 0.0, body.inverseInertia.z ) * transpose( rotation );
+		vec3 velocity = body.velocityInvMass.xyz + linearImpulse * inverseMass + params.gravityDt.xyz * dt;
+		vec3 angularVelocity = body.angularVelocity.xyz + inverseInertia * angularImpulse;
+		velocity        /= 1.0 + dt * body.inverseInertia.w;
+		angularVelocity /= 1.0 + dt * 2.0 * body.inverseInertia.w;
+
+		vec3 position = body.positionType.xyz + velocity * dt;
+		vec4 orientation = normalize( body.rotation + 0.5 * dt * quaternionMultiply( vec4( angularVelocity, 0.0 ), body.rotation ) );
+
+		/// Walls: the deepest point per wall (box corners or the sphere point) gets a contact impulse and is pushed out.
+		const bool isSphere = body.positionType.w < 1.5;
+		const mat3 newRotation = rotationMatrix( orientation );
+		for ( int wall = 0; wall < 6; ++wall ) {
+			const int axis = wall / 2;
+			const float side = (wall % 2 == 0) ? 1.0 : -1.0;                         // Low walls push along +axis
+			vec3 normal = vec3( 0.0 );
+			normal[axis] = side;
+			const float plane = side > 0.0 ? wallMin[axis] : -wallMax[axis];
+
+			float deepest = 0.0;
+			vec3 deepestOffset = vec3( 0.0 );
+			const int corners = isSphere ? 1 : 8;
+			for ( int c = 0; c < corners; ++c ) {
+				const vec3 offset = isSphere ? -normal * body.halfExtents.x
+					: newRotation * (body.halfExtents.xyz * vec3( (c & 1) != 0 ? 1.0 : -1.0, (c & 2) != 0 ? 1.0 : -1.0, (c & 4) != 0 ? 1.0 : -1.0 ));
+				const float penetration = plane - dot( position + offset, normal );
+				if ( penetration > deepest ) {
+					deepest = penetration;
+					deepestOffset = offset;
+				}
+			}
+			if ( deepest > 0.0 ) {
+				contactImpulse( velocity, angularVelocity, inverseMass, inverseInertia, deepestOffset, normal );
+				position += normal * deepest;
+			}
+		}
+
+		body.positionType.xyz    = position;
+		body.rotation            = orientation;
+		body.velocityInvMass.xyz = velocity;
+		body.angularVelocity.xyz = angularVelocity;
+		bodies[b] = body;
+	}
+
+	/// Body pairs, approximated by spheres (boxes by a sphere between the inscribed and the bounding one).
+	for ( uint a = 0u; a < count; ++a ) {
+		for ( uint b = a + 1u; b < count; ++b ) {
+			Body bodyA = bodies[a];
+			Body bodyB = bodies[b];
+			if ( bodyA.positionType.w < 0.5 || bodyB.positionType.w < 0.5 )
+				continue;
+			const float radiusA = bodyA.positionType.w < 1.5 ? bodyA.halfExtents.x : 0.5 * (bodyA.halfExtents.w + min( bodyA.halfExtents.x, min( bodyA.halfExtents.y, bodyA.halfExtents.z ) ));
+			const float radiusB = bodyB.positionType.w < 1.5 ? bodyB.halfExtents.x : 0.5 * (bodyB.halfExtents.w + min( bodyB.halfExtents.x, min( bodyB.halfExtents.y, bodyB.halfExtents.z ) ));
+			const vec3 delta = bodyB.positionType.xyz - bodyA.positionType.xyz;
+			const float distanceAB = length( delta );
+			const float overlap = radiusA + radiusB - distanceAB;
+			const float inverseMassSum = bodyA.velocityInvMass.w + bodyB.velocityInvMass.w;
+			if ( overlap <= 0.0 || distanceAB < 1e-6 || inverseMassSum <= 0.0 )
+				continue;
+			const vec3 normal = delta / distanceAB;
+			bodyA.positionType.xyz -= normal * overlap * bodyA.velocityInvMass.w / inverseMassSum;
+			bodyB.positionType.xyz += normal * overlap * bodyB.velocityInvMass.w / inverseMassSum;
+			const float approachSpeed = dot( bodyB.velocityInvMass.xyz - bodyA.velocityInvMass.xyz, normal );
+			if ( approachSpeed < 0.0 ) {
+				const float impulse = -(1.0 + params.bodyParams.w) * approachSpeed / inverseMassSum;
+				bodyA.velocityInvMass.xyz -= normal * impulse * bodyA.velocityInvMass.w;
+				bodyB.velocityInvMass.xyz += normal * impulse * bodyB.velocityInvMass.w;
+			}
+			bodies[a] = bodyA;
+			bodies[b] = bodyB;
+		}
+	}
+}

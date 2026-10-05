@@ -1,0 +1,77 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Separable narrow range filter of the fluid depth (Truong & Yuksel, "A Narrow-Range Filter for Screen-Space Fluid
+// Rendering", 2018): a Gaussian whose screen radius follows a world space radius; samples far behind the center are
+// ignored (another surface), samples far in front are clamped, so the surface gets smooth without bleeding over edges.
+// The range is measured from the tangent line of the surface along the filter direction, not from the center depth:
+// at grazing angles the depth changes by more than the range within the kernel, a flat range would reject one side
+// of the kernel and leave streaks along the filter direction.
+// The renderer alternates the directions (axes, then diagonals): the per column noise of the particles that one
+// direction leaves is smoothed by the next ones instead of being stretched into streaks.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+#include "fluid_render_common.glsl"
+
+layout(set = 1, binding = 0, r32f) uniform readonly image2D source;
+layout(set = 1, binding = 1, r32f) uniform writeonly image2D destination;
+
+layout(push_constant) uniform Push { ivec2 direction; } push;
+
+float depthAt( ivec2 pixel, ivec2 size ) {
+	if ( any( lessThan( pixel, ivec2( 0 ) ) ) || any( greaterThanEqual( pixel, size ) ) )
+		return NO_FLUID;
+	return imageLoad( source, pixel ).r;
+}
+
+void main() {
+	const ivec2 pixel = ivec2( gl_GlobalInvocationID.xy );
+	const ivec2 size = imageSize( source );
+	if ( pixel.x >= size.x || pixel.y >= size.y )
+		return;
+
+	const float center = imageLoad( source, pixel ).r;
+	if ( center >= NO_FLUID ) {
+		imageStore( destination, pixel, vec4( center ) );
+		return;
+	}
+
+	const float stepLength = length( vec2( push.direction ) );            // 1 along the axes, sqrt(2) along the diagonals
+	const float radiusPixels = params.material.w * params.projectionParams.z / center;
+	const int radius = clamp( int( radiusPixels / stepLength ), 1, 24 );  // In steps along the direction
+	const int step = radius > 12 ? 2 : 1;                                 // Wide kernels are sampled every second pixel
+	const float sigma = max( float( radius ) * 0.5, 0.5 );
+	const float inverseTwoSigma2 = 1.0 / (2.0 * sigma * sigma);
+	const float range = params.particleParams.x * 2.0;                   // Depth range of one surface
+
+	/// Slope of the surface per step from differences over a third of the kernel; neighbors steeper than ~75 degrees
+	/// (or across a silhouette) are not the same surface.
+	const int baseline = max( radius / 3, 1 );
+	const float pixelSize = center / params.projectionParams.z * stepLength;   // World size of one step
+	const float maxDifference = range + float( baseline ) * pixelSize * 4.0;
+	const float forward = depthAt( pixel + push.direction * baseline, size ) - center;
+	const float backward = center - depthAt( pixel - push.direction * baseline, size );
+	const bool hasForward = abs( forward ) < maxDifference, hasBackward = abs( backward ) < maxDifference;
+	float slope = 0.0;
+	if ( hasForward && hasBackward )
+		slope = 0.5 * (forward + backward) / float( baseline );
+	else if ( hasForward )
+		slope = forward / float( baseline );
+	else if ( hasBackward )
+		slope = backward / float( baseline );
+
+	float sum = center;
+	float weightSum = 1.0;
+	for ( int k = step; k <= radius; k += step ) {
+		const float weight = exp( -float( k * k ) * inverseTwoSigma2 );
+		for ( int side = -1; side <= 1; side += 2 ) {
+			float depth = depthAt( pixel + push.direction * k * side, size );
+			const float tangent = center + slope * float( k * side );
+			if ( depth >= NO_FLUID || depth > tangent + range )
+				continue;
+			depth = max( depth, tangent - range );
+			sum += depth * weight;
+			weightSum += weight;
+		}
+	}
+	imageStore( destination, pixel, vec4( sum / weightSum ) );
+}

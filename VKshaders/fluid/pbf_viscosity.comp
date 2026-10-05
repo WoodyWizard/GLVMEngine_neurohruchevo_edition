@@ -1,0 +1,55 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Velocities from the solved positions (v = (x* - x) / dt, computed for the neighbors on the fly), then
+// XSPH viscosity v_i += c * sum_j (v_j - v_i) W_ij / sum_j W_ij, vorticity omega_i = sum_j V_j v_ij x grad_j W_ij,
+// dye diffusion and the foam measure (trapped air: neighbors moving towards each other).
+
+layout(local_size_x = 128) in;
+#include "pbf_common.glsl"
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i >= particleCount() )
+		return;
+
+	const vec3 position = predictedIn[i].xyz;
+	const vec3 velocity = solvedVelocity( i );
+	const float h2 = kernelRadius() * kernelRadius();
+	const float selfWeight = poly6( 0.0 );
+
+	vec3 viscosity = vec3( 0.0 );
+	vec3 omega = vec3( 0.0 );
+	vec3 dye = colorsIn[i].rgb * selfWeight;
+	float weightSum = selfWeight;
+	float trappedAir = 0.0;
+	const uint count = neighborCounts[i];
+	for ( uint slot = 0u; slot < count; ++slot ) {
+		const uint j = neighborAt( i, slot );
+		const vec3 r = position - predictedIn[j].xyz;
+		const float r2 = dot( r, r );
+		if ( r2 >= h2 )
+			continue;
+		const float rLength = sqrt( r2 );
+		const float weight = poly6( r2 );
+		const vec3 relative = solvedVelocity( j ) - velocity;
+		viscosity += relative * weight;
+		weightSum += weight;
+		omega += cross( relative, -spikyGradient( r, rLength ) );          // grad_j W(p_i - p_j) = -grad_i W
+		dye += colorsIn[j].rgb * weight;
+		/// Ihmsen et al. 2012: particles moving towards each other trap air
+		const float relativeSpeed = length( relative );
+		if ( relativeSpeed > 1e-6 )
+			trappedAir += relativeSpeed * (1.0 - dot( -relative / relativeSpeed, r / max( rLength, 1e-9 ) )) * (1.0 - rLength / kernelRadius());
+	}
+
+	const vec3 newVelocity = velocity + params.motion.x * viscosity / weightSum;
+	velocitiesIn[i] = vec4( newVelocity, velocitiesIn[i].w );
+	omega *= params.kernel.w;                                            // SPH estimate: unit masses / rest density
+	omegas[i] = vec4( omega, length( omega ) );
+
+	/// Foam grows with trapped air and fast motion, then dissolves (w of the color).
+	const float foam = colorsIn[i].w;
+	const float source = clamp( trappedAir * 0.15 - 0.6, 0.0, 1.0 ) * clamp( length( newVelocity ) * 0.5 - 0.3, 0.0, 1.0 );
+	const float dt = params.gravityDt.w;
+	colorsOut[i] = vec4( mix( colorsIn[i].rgb, dye / weightSum, params.wall.y ), clamp( foam + source * 6.0 * dt - foam * 1.5 * dt, 0.0, 1.0 ) );
+}

@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Integrates external forces, predicts positions and counts particles per grid cell.
+// Particles that fall into the drain box are moved to the pump nozzle (a recirculating fountain).
+
+layout(local_size_x = 128) in;
+#include "pbf_common.glsl"
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i >= particleCount() )
+		return;
+
+	const float dt = params.gravityDt.w;
+	vec4 position = positionsIn[i];
+	vec4 velocity = velocitiesIn[i];
+	velocity.xyz += params.gravityDt.xyz * dt;
+
+	/// Pump: a limited number of particles per substep is moved from the drain to the nozzle.
+	if ( params.drainMin.w > 0.5 && all( greaterThan( position.xyz, params.drainMin.xyz ) ) &&
+		 all( lessThan( position.xyz, params.drainMax.xyz ) ) ) {
+		const uint slot = atomicAdd( counters[0], 1u );
+		if ( slot < params.counts.z ) {
+			/// Slots fill a disc of the nozzle radius on a square lattice of the particle spacing.
+			const float spacing = params.emitterVelocity.w;
+			const int perRow = max( int( 2.0 * params.emitterPosition.w / spacing ), 1 );
+			const vec2 grid = (vec2( float( int(slot) % perRow ), float( int(slot) / perRow ) ) - 0.5 * float(perRow - 1)) * spacing;
+			const vec3 direction = normalize( params.emitterVelocity.xyz );
+			const vec3 tangent = normalize( abs( direction.y ) < 0.9 ? cross( direction, vec3( 0.0, 1.0, 0.0 ) ) : cross( direction, vec3( 1.0, 0.0, 0.0 ) ) );
+			const vec3 bitangent = cross( direction, tangent );
+			position.xyz = params.emitterPosition.xyz + tangent * grid.x + bitangent * grid.y;
+			velocity.xyz = params.emitterVelocity.xyz;
+			colorsIn[i] = vec4( params.emitterColor.rgb, 0.0 );
+		}
+	}
+
+	const float speed = length( velocity.xyz );
+	if ( speed > params.motion.z )
+		velocity.xyz *= params.motion.z / speed;
+
+	const float radius = params.solver.w;
+	vec3 predicted = position.xyz + velocity.xyz * dt;
+	predicted = clamp( predicted, params.domainMinH.xyz + radius, params.domainMaxInvH.xyz - radius );
+
+	positionsIn[i]  = position;
+	velocitiesIn[i] = velocity;
+	predictedOut[i] = vec4( predicted, position.w );
+
+	const uint cell = cellIndex( cellCoordinate( predicted ) );
+	particleCell[i]   = cell;
+	particleOffset[i] = atomicAdd( cellData[cell], 1u );
+}

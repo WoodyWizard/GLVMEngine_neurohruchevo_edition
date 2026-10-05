@@ -125,6 +125,50 @@ Tests (synthetic models, plus every model of the given directories, e.g. the
     make -f MakefileLin gltf-tests
     ./build/gltfTests path/to/glTF-Sample-Assets/Models
 
+## Fluid simulation
+
+A GPU liquid module in `src/Fluid` (interface: `include/Fluid/`), independent of the game renderer. It needs Vulkan 1.3
+(compute shaders, dynamic rendering) and records its work into command buffers of the host.
+
+* `FluidSimulation`: Position Based Fluids (Macklin & Mueller 2013, the method of NVIDIA Flex) in compute shaders.
+  Neighbor search on a uniform grid with a counting sort (prefix sum on the GPU), neighbor lists, Jacobi density
+  iterations with a unilateral constraint, analytic wall density (no boundary particles), artificial pressure,
+  XSPH viscosity, vorticity confinement, rigid spheres and boxes with two way coupling (buoyancy and drag come from
+  the particle impulses), dye colors that diffuse and mix, foam from trapped air, a pump (drain -> nozzle).
+* `FluidRenderer`: screen space fluid rendering. Sphere impostor depth, narrow range filter of the depth (Truong &
+  Yuksel 2018, slope aware, alternating directions), thickness, dye and foam at half resolution, then refraction,
+  Beer-Lambert absorption, Fresnel reflection of the sky, sun highlight and foam. It also renders the fluid seen from
+  the sun: the host can tint and attenuate sunlight under the water and add caustics.
+
+The game level has a water tank next to the start position (`FluidTank`, placed in `Engine::createFluidTank`): a piston
+on a linear actuator makes waves, beach balls and a crate float, projectiles that fly into the water splash, the
+player can't walk through it. It is drawn into the game frame after the main pass (refraction of the level behind it)
+and is simulated only while it is in the view, in fixed steps of 1/60 s. Without Vulkan 1.3 dynamic rendering the
+level has no tank.
+
+Demo (a separate program: a glass tank with five scenarios, sun shadows, water shadows and caustics):
+
+    make -f MakefileLin fluid-demo                                     # or MakefileWine / MakefileMingw fluid-demo
+    cd build && ./fluidDemo
+
+    Mouse, W S A D   orbit the camera, zoom, turn
+    Space            next scenario: dam break, two dyes, fountain, drop, wave pool
+    I                view: final, particles, depth, thickness, normals
+    O                pause
+    Left button      drop water
+    Esc              quit
+
+Options: `--scenario N`, `--frames N` (fixed 60 Hz steps, then quit), `--screenshot FRAME:PATH` (PNG),
+`--mode N`, `--camera YAW,PITCH,DISTANCE`, `--spacing METERS`, `--no-vsync`, `--integrated`.
+The quality follows the GPU: discrete GPUs simulate 16 mm particles (about 60 000 in the tank, 2 substeps x 4
+iterations), integrated GPUs 25 mm particles (about 16 000, 3 iterations). On an Intel Iris Xe the demo runs at
+about 100 fps (simulation 3.5 ms, scene 1.5 ms, fluid rendering 3.5 ms at 1280 x 700).
+
+Tests (GPU substep against a CPU reference, resting pool, dam break, floating box, pump, benchmark; run from the
+project root):
+
+    make -f MakefileLin fluid-tests && ./build/fluidTests
+
 ## Controls
 
     W A S D     move
@@ -139,3 +183,8 @@ Tests (synthetic models, plus every model of the given directories, e.g. the
 
 Compiled SPIR-V shaders are in the repository. After editing a shader run `compile.sh` (needs `glslangValidator`)
 in its directory under `VKshaders/`.
+
+## Screenshots
+
+`GLVM_SCREENSHOT=<frame>:<file.png>` saves the whole frame number `<frame>` of the game as a PNG, e.g.
+`GLVM_SCREENSHOT=300:shot.png ./linGame` in `build/` (the fluid demo has `--screenshot`).

@@ -23,6 +23,8 @@
 #include "Components/CrosshairComponent.hpp"
 #include "EntityManager.hpp"
 #include "GraphicAPI/RenderConfig.hpp"
+#include "Common/PngWriter.hpp"
+#include "Fluid/FluidTank.hpp"
 #include "GraphicAPI/RenderData.hpp"
 #include "PGA.hpp"
 #include "ShaderStructs.hpp"
@@ -188,6 +190,8 @@ namespace GLVM::core
         createDepthResources();
 		createFramebuffers();
 		aspectRate = (float)swapChainExtent.width / (float)swapChainExtent.height;
+		if ( fluidTank )
+			fluidTank->setTargets( swapChainExtent.width, swapChainExtent.height, mainDepthImageView );
 
 		/// Present semaphores are indexed by swapchain image, their number has to follow the image count.
 		if ( renderFinishedSemaphores.size() != swapChainImages.size() ) {
@@ -212,7 +216,15 @@ namespace GLVM::core
 
 		renderThreadPool = new ThreadPool(3);
 		startTime = std::chrono::steady_clock::now();      ///< For SDF pipeline
-		
+
+		if ( const char* screenshot = std::getenv("GLVM_SCREENSHOT") ) {
+			const char* colon = std::strchr(screenshot, ':');
+			if ( colon != nullptr && colon[1] != '\0' ) {
+				screenshotFrame = std::atoll(screenshot);
+				screenshotPath  = colon + 1;
+			}
+		}
+
         initWindow();
         initVulkan();
 		mapUniformBuffers();
@@ -574,6 +586,7 @@ namespace GLVM::core
 	}
 
     void CVulkanRenderer::cleanup() {
+		destroyFluidTank();
         cleanupSwapChain();
 
 		/// Worker threads only record command buffers, they have to be stopped before the device is destroyed.
@@ -707,6 +720,11 @@ namespace GLVM::core
         appInfo.pEngineName = "Grey Lane Vertex Machine";
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.apiVersion = VK_API_VERSION_1_0;
+		/// Vulkan 1.3 when the loader has it: the water tank (fluid module) needs dynamic rendering.
+		uint32_t instanceVersion = VK_API_VERSION_1_0;
+		const auto enumerateInstanceVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+		if ( enumerateInstanceVersion != nullptr && enumerateInstanceVersion(&instanceVersion) == VK_SUCCESS && instanceVersion >= VK_API_VERSION_1_3 )
+			appInfo.apiVersion = VK_API_VERSION_1_3;
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -838,6 +856,29 @@ namespace GLVM::core
 
         createInfo.pEnabledFeatures = &deviceFeatures;
 
+		/// Dynamic rendering (Vulkan 1.3) for the water tank, if the device has it and its graphics queue has compute.
+		VkPhysicalDeviceProperties deviceProperties;
+		vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+		uint32_t queueFamilyNumber = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyNumber, nullptr);
+		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyNumber);
+		vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyNumber, queueFamilies.data());
+		const bool hasCompute = (queueFamilies[indices.graphicsFamily.value()].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+		if ( deviceProperties.apiVersion >= VK_API_VERSION_1_3 && hasCompute ) {
+			VkPhysicalDeviceVulkan13Features supportedVulkan13Features{};
+			supportedVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+			VkPhysicalDeviceFeatures2 supportedFeatures{};
+			supportedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			supportedFeatures.pNext = &supportedVulkan13Features;
+			vkGetPhysicalDeviceFeatures2(physicalDevice, &supportedFeatures);
+			isDynamicRenderingEnabled = supportedVulkan13Features.dynamicRendering == VK_TRUE;
+		}
+		VkPhysicalDeviceVulkan13Features vulkan13Features{};
+		vulkan13Features.sType            = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+		vulkan13Features.dynamicRendering = VK_TRUE;
+		if ( isDynamicRenderingEnabled )
+			createInfo.pNext = &vulkan13Features;
+
         createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
         createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
@@ -879,6 +920,10 @@ namespace GLVM::core
         createInfo.imageExtent = extent;
         createInfo.imageArrayLayers = 1;
         createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		/// Copies of the frame: screenshots and the scene behind the fluid (refraction)
+		canCopySwapChainImages = (swapChainSupport.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+		if ( canCopySwapChainImages )
+			createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
@@ -3221,7 +3266,11 @@ namespace GLVM::core
 			}
 		}
 		
+		if ( fluidTank )
+			recordFluidTank(mainRenderCommandBuffers[currentFrame], imageIndex, true);
         recordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
+		if ( fluidTank )
+			recordFluidTank(mainRenderCommandBuffers[currentFrame], imageIndex, false);
 		hudRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
 		fontRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
 		if ( isInventoryOpened ) {
@@ -3238,6 +3287,15 @@ namespace GLVM::core
 //		sdfRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
 
 //		spacialGridDebugRecordCommandBuffer(mainRenderCommandBuffers[currentFrame], imageIndex);
+
+		VkBuffer       screenshotBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory screenshotMemory = VK_NULL_HANDLE;
+		if ( canCopySwapChainImages && screenshotFrame >= 0 && renderedFramesNumber == static_cast<uint64_t>(screenshotFrame) ) {
+			createBuffer( static_cast<VkDeviceSize>(swapChainExtent.width) * swapChainExtent.height * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+						  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, screenshotBuffer, screenshotMemory );
+			recordSwapChainCopy( mainRenderCommandBuffers[currentFrame], imageIndex, screenshotBuffer );
+		}
+		++renderedFramesNumber;
 
         if (vkEndCommandBuffer(mainRenderCommandBuffers[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
@@ -3263,6 +3321,10 @@ namespace GLVM::core
         if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to submit draw command buffer!");
         }
+		if ( screenshotBuffer != VK_NULL_HANDLE ) {
+			vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+			saveScreenshot( screenshotBuffer, screenshotMemory );
+		}
 
         VkPresentInfoKHR presentInfo{};
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -3288,6 +3350,144 @@ namespace GLVM::core
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 //		currentFrame = 0;
     }
+
+	bool CVulkanRenderer::isDiscreteGpu() const {
+		VkPhysicalDeviceProperties properties;
+		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+		return properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+	}
+
+	/// Creates the water tank after the renderer is initialized (run()). Returns false when the GPU can't run it.
+	bool CVulkanRenderer::createFluidTank( const fluid::FluidTankDescription& description ) {
+		if ( !isDynamicRenderingEnabled || !canCopySwapChainImages ) {
+			std::cout << "Water tank skipped: it needs Vulkan 1.3 dynamic rendering and copyable swapchain images" << std::endl;
+			return false;
+		}
+		try {
+			fluidContext = std::make_unique<fluid::GpuContext>();
+			fluidContext->physicalDevice  = physicalDevice;
+			fluidContext->device          = device;
+			fluidContext->queue           = graphicsQueue;
+			fluidContext->queueFamily     = findQueueFamilies(physicalDevice).graphicsFamily.value();
+			fluidContext->shaderDirectory = "../VKshaders/fluid/";
+			vkGetPhysicalDeviceProperties(physicalDevice, &fluidContext->properties);
+			vkGetPhysicalDeviceMemoryProperties(physicalDevice, &fluidContext->memoryProperties);
+			createCommandPool(fluidContext->commandPool);
+
+			fluidTank = std::make_unique<fluid::FluidTank>( *fluidContext, description, swapChainImageFormat, findDepthFormat() );
+			fluidTank->setTargets( swapChainExtent.width, swapChainExtent.height, mainDepthImageView );
+			std::cout << "Water tank: " << fluidTank->particleCount() << " particles" << std::endl;
+			return true;
+		} catch ( const std::exception& error ) {
+			std::cerr << "Water tank disabled: " << error.what() << std::endl;
+			destroyFluidTank();
+			return false;
+		}
+	}
+
+	void CVulkanRenderer::destroyFluidTank() {
+		fluidTank.reset();
+		if ( fluidContext ) {
+			if ( fluidContext->commandPool != VK_NULL_HANDLE )
+				vkDestroyCommandPool(device, fluidContext->commandPool, nullptr);
+			fluidContext.reset();
+		}
+	}
+
+	/*
+	  Water tank commands: the simulation step before the main pass (isSimulation), the tank over the main pass after it.
+	  Both only when the tank is in the view: out of the view the water waits.
+	*/
+	void CVulkanRenderer::recordFluidTank( VkCommandBuffer commandBuffer, uint32_t imageIndex, bool isSimulation ) {
+		const fluid::Vec3 low = fluidTank->boundsMin(), high = fluidTank->boundsMax();
+		const AABB bounds = { .origin  = vec3( 0.5f * (low.x + high.x), 0.5f * (low.y + high.y), 0.5f * (low.z + high.z) ),
+							  .extents = vec3( 0.5f * (high.x - low.x), 0.5f * (high.y - low.y), 0.5f * (high.z - low.z) ) };
+		if ( !::isFrustumIntersect( mainCameraFrustum, bounds ) )
+			return;
+		if ( isSimulation ) {
+			fluidTank->recordSimulation( commandBuffer, fluidFrameTime );
+			return;
+		}
+
+		fluid::FluidTankCamera camera;
+		for ( int column = 0; column < 4; ++column )
+			for ( int row = 0; row < 4; ++row ) {
+				camera.view.at( row, column )       = viewMatrix[column][row];
+				camera.projection.at( row, column ) = projectionMatrix[column][row];
+			}
+		/// Perspective parameters from the matrix: P22 = f / (n - f), P32 = f n / (n - f), P11 = 1 / tan(fov / 2).
+		const float p22 = camera.projection.at( 2, 2 ), p32 = camera.projection.at( 2, 3 );
+		camera.nearPlane   = p32 / p22;
+		camera.farPlane    = p32 / (p22 + 1.0f);
+		camera.verticalFov = 2.0f * std::atan( 1.0f / std::fabs( camera.projection.at( 1, 1 ) ) );
+		if ( directionalLights.GetSize() > 0 ) {
+			const vec4& direction = directionalLights[0].direction;          ///< Direction the light shines in
+			camera.lightDirection = fluid::normalize( { -direction[0], -direction[1], -direction[2] } );
+		}
+		camera.lightColor       = { 1.0f, 0.97f, 0.92f };
+		camera.lightIntensity   = 0.9f;
+		camera.ambientColor     = { 0.32f, 0.32f, 0.34f };
+		camera.environmentColor = { 0.3f, 0.3f, 0.32f };                  ///< The gray level around
+
+		fluid::FluidTankTarget target;
+		target.colorImage  = swapChainImages[imageIndex];
+		target.colorView   = swapChainImageViews[imageIndex];
+		target.colorLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;                  ///< Final layout of the main pass, initial of the HUD pass
+		target.depthImage  = mainDepthPipelineImage;
+		target.depthAspect = VK_IMAGE_ASPECT_DEPTH_BIT | (hasStencilComponent(findDepthFormat()) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u);
+		target.depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		fluidTank->recordRendering( commandBuffer, target, camera );
+	}
+
+	/// Copies the finished swapchain image (PRESENT_SRC_KHR before and after) into a buffer.
+	void CVulkanRenderer::recordSwapChainCopy( VkCommandBuffer commandBuffer, uint32_t imageIndex, VkBuffer destination ) {
+		VkImageMemoryBarrier barrier{};
+		barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = swapChainImages[imageIndex];
+		barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+		barrier.oldLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkBufferImageCopy region{};
+		region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+		region.imageExtent      = { swapChainExtent.width, swapChainExtent.height, 1 };
+		vkCmdCopyImageToBuffer(commandBuffer, swapChainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination, 1, &region);
+
+		barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barrier.newLayout     = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barrier.dstAccessMask = 0;
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+							 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
+	/// Writes the copied frame (the GPU work is finished) as a PNG and frees the buffer.
+	void CVulkanRenderer::saveScreenshot( VkBuffer buffer, VkDeviceMemory memory ) {
+		const size_t pixelsNumber = static_cast<size_t>(swapChainExtent.width) * swapChainExtent.height;
+		void* mapped = nullptr;
+		vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+		const uint8_t* pixels = static_cast<const uint8_t*>(mapped);
+		const bool isBgra = swapChainImageFormat == VK_FORMAT_B8G8R8A8_SRGB || swapChainImageFormat == VK_FORMAT_B8G8R8A8_UNORM;
+		std::vector<uint8_t> rgb( pixelsNumber * 3 );
+		for ( size_t i = 0; i < pixelsNumber; ++i ) {
+			rgb[i * 3 + 0] = pixels[i * 4 + (isBgra ? 2 : 0)];
+			rgb[i * 3 + 1] = pixels[i * 4 + 1];
+			rgb[i * 3 + 2] = pixels[i * 4 + (isBgra ? 0 : 2)];
+		}
+		vkUnmapMemory(device, memory);
+		vkDestroyBuffer(device, buffer, nullptr);
+		vkFreeMemory(device, memory, nullptr);
+		if ( writePng( screenshotPath, swapChainExtent.width, swapChainExtent.height, rgb ) )
+			std::cout << "Screenshot: " << screenshotPath << std::endl;
+		else
+			std::cerr << "Can't write the screenshot " << screenshotPath << std::endl;
+	}
 
     void CVulkanRenderer::directionalLightShadowMapDrawFrame() {
 		namespace cm = GLVM::ecs::components;

@@ -1,0 +1,44 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Builds the neighbor list of every particle from the sorted grid (the 3 cells of a row are contiguous) and
+// computes lambda of the first solver iteration in the same pass.
+
+layout(local_size_x = 128) in;
+#include "pbf_common.glsl"
+
+void main() {
+	const uint i = gl_GlobalInvocationID.x;
+	if ( i >= particleCount() )
+		return;
+
+	const vec3 position = predictedIn[i].xyz;
+	const float h2 = kernelRadius() * kernelRadius();
+	const float inverseRestDensity = params.kernel.w;
+
+	uint count = 0u;
+	float density = 0.0;
+	vec3 gradientI = vec3( 0.0 );
+	float sumGradient2 = 0.0;
+	const ivec3 cell = cellCoordinate( position );
+	for ( int row = 0; row < 9; ++row ) {
+		const uvec2 range = neighborRow( cell, row );
+		for ( uint j = range.x; j < range.y; ++j ) {
+			const vec3 r = position - predictedIn[j].xyz;
+			const float r2 = dot( r, r );
+			if ( r2 >= h2 )
+				continue;
+			density += poly6( r2 );
+			if ( j == i )
+				continue;
+			if ( count < MAX_NEIGHBORS ) {
+				neighbors[count * params.counts.w + i] = j;
+				++count;
+			}
+			const vec3 gradient = spikyGradient( r, sqrt( r2 ) ) * inverseRestDensity;
+			gradientI += gradient;
+			sumGradient2 += dot( gradient, gradient );
+		}
+	}
+	neighborCounts[i] = count;
+	storeLambda( i, position, density, gradientI, sumGradient2 );
+}

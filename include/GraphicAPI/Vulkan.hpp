@@ -21,6 +21,7 @@
 #include <set>
 #include <cmath>
 #include <atomic>
+#include <memory>
 #include <vulkan/vulkan_core.h>
 
 #include "Components/ItemComponent.hpp"
@@ -83,6 +84,13 @@
 #include <vulkan/vulkan.h>
 #include "WinApi/WindowWinVulkan.hpp"
 #endif
+
+namespace GLVM::fluid
+{
+	struct GpuContext;
+	struct FluidTankDescription;
+	class FluidTank;
+}
 
 namespace GLVM::core
 {
@@ -411,6 +419,27 @@ namespace GLVM::core
 		VkExtent2D swapChainWindowSize{};                    ///< Window size the current swapchain was created for
 		bool swapChainRecreatePending = false;               ///< Swapchain couldn't be recreated (zero sized window), retry on the next frame
 		std::atomic<uint32_t> reportedUboOverflows{0};       ///< Bit per pipeline, uniform slot overflow is reported only once
+		bool canCopySwapChainImages = false;                 ///< Swapchain images have TRANSFER_SRC usage (screenshots, fluid refraction)
+		/// Development screenshot: environment variable GLVM_SCREENSHOT=<frame>:<file.png> saves the whole frame <frame> as a PNG.
+		int64_t screenshotFrame = -1;
+		std::string screenshotPath;
+		uint64_t renderedFramesNumber = 0;
+		void recordSwapChainCopy( VkCommandBuffer commandBuffer, uint32_t imageIndex, VkBuffer destination );
+		void saveScreenshot( VkBuffer buffer, VkDeviceMemory memory );
+
+		/*
+		  Water tank of the level (fluid module, include/Fluid/FluidTank.hpp): simulated before the main pass, drawn over
+		  it when it is in the view. Needs Vulkan 1.3 dynamic rendering and a graphics queue with compute; without them
+		  the level has no tank. The engine places it (createFluidTank) and sets the frame time and the splashers.
+		*/
+		bool isDynamicRenderingEnabled = false;
+		std::unique_ptr<fluid::GpuContext> fluidContext;
+		std::unique_ptr<fluid::FluidTank>  fluidTank;
+		float fluidFrameTime = 0.0f;
+		bool isDiscreteGpu() const;
+		bool createFluidTank( const fluid::FluidTankDescription& description );
+		void destroyFluidTank();
+		void recordFluidTank( VkCommandBuffer commandBuffer, uint32_t imageIndex, bool isSimulation );
 
         void initWindow();
         void initVulkan();

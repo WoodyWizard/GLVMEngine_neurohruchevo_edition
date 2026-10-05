@@ -5,6 +5,8 @@
 #   make -f MakefileLin WERROR=1                treat warnings as errors
 #   make -f MakefileLin run                     build and start the game
 #   make -f MakefileLin gltf-tests              glTF loader tests: build/gltfTests [glTF-Sample-Assets/Models ...]
+#   make -f MakefileLin fluid-demo              GPU fluid demo: build/fluidDemo (cd build && ./fluidDemo --help)
+#   make -f MakefileLin fluid-tests             fluid simulation tests: build/fluidTests (run from the project root)
 #   make -f MakefileLin clean
 #
 # The executable must stay in build/: resources are looked up as ../<dir>/ relative to the executable.
@@ -53,7 +55,7 @@ OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES) $(TEXTURE_SOURCES)) \
 	  $(patsubst ./%.c,$(OBJ_DIR)/%.o,$(SOURCES_C))
 TARGET  = $(BUILD)/$(EXECUTABLE)
 
-.PHONY: all run clean wayland-protocols udp-client gltf-tests
+.PHONY: all run clean wayland-protocols udp-client gltf-tests fluid-demo fluid-tests
 
 all: $(TARGET)
 
@@ -87,8 +89,24 @@ $(BUILD)/gltfTests: $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLTF_TEST_SOURCES))
 
 -include $(OBJ_DIR)/tests/GltfTests.d
 
+# GPU fluid demo (src/FluidDemo, a separate program on the fluid module) and the fluid tests
+FLUID_DEMO_OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLVM_FLUID_DEMO_SOURCES) $(GLVM_FLUID_DEMO_LINUX_SOURCES)) \
+	$(patsubst ./%.c,$(OBJ_DIR)/%.o,$(SOURCES_C))
+FLUID_TEST_OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLVM_FLUID_TEST_SOURCES))
+fluid-demo: $(BUILD)/fluidDemo
+fluid-tests: $(BUILD)/fluidTests
+
+$(BUILD)/fluidDemo: $(FLUID_DEMO_OBJECTS)
+	$(CXX) $(LDFLAGS) $^ $(LDLIBS) -o $@
+
+$(BUILD)/fluidTests: $(FLUID_TEST_OBJECTS)
+	$(CXX) $(LDFLAGS) $^ -lvulkan -pthread -o $@
+
+-include $(FLUID_DEMO_OBJECTS:.o=.d) $(FLUID_TEST_OBJECTS:.o=.d)
+
 clean:
-	rm -rf $(BUILD)/obj $(BUILD)/obj-asan $(BUILD)/linGame $(BUILD)/linGame-asan $(BUILD)/udpClient $(BUILD)/gltfTests
+	rm -rf $(BUILD)/obj $(BUILD)/obj-asan $(BUILD)/linGame $(BUILD)/linGame-asan $(BUILD)/udpClient $(BUILD)/gltfTests \
+		$(BUILD)/fluidDemo $(BUILD)/fluidTests
 
 # Regenerate the protocol glue (needs wayland-scanner from wayland-devel)
 WAYLAND_SCANNER ?= wayland-scanner

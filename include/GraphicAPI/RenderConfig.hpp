@@ -648,7 +648,7 @@ namespace GLVM::core
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].flags          = 0;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].samples        = VK_SAMPLE_COUNT_1_BIT;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;          ///< The water tank tests and samples the scene depth
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		renderPassConfigs[MAIN_RENDER_PIPELINE].attachmentDescriptions[1].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;

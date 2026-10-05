@@ -2,6 +2,7 @@
 #
 #   export VULKAN_SDK=/path/to/VulkanSDK/<version>     # must contain Include/ and Lib/ (vulkan-1 import library)
 #   make -f MakefileMingw -j$(nproc)                   # -> build/winGame.exe
+#   make -f MakefileMingw fluid-demo                   # -> build/fluidDemo.exe (GPU fluid demo)
 #
 # The executable must stay in build/: resources are looked up as ../<dir>/ relative to the executable.
 
@@ -26,18 +27,25 @@ SOURCES = $(GLVM_COMMON_SOURCES) $(GLVM_WINDOWS_SOURCES) $(GLVM_TEXTURE_SOURCES)
 OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
 TARGET  = $(BUILD)/winGame.exe
 
-.PHONY: all clean
+.PHONY: all clean fluid-demo
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 	$(CXX) $(LDFLAGS) $(OBJECTS) $(LDLIBS) -o $@
 
+# GPU fluid demo (src/FluidDemo, a separate program on the fluid module)
+FLUID_DEMO_OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLVM_FLUID_DEMO_SOURCES) $(GLVM_FLUID_DEMO_WINDOWS_SOURCES))
+fluid-demo: $(BUILD)/fluidDemo.exe
+
+$(BUILD)/fluidDemo.exe: $(FLUID_DEMO_OBJECTS)
+	$(CXX) $(LDFLAGS) $(FLUID_DEMO_OBJECTS) $(LDLIBS) -o $@
+
 $(OBJ_DIR)/%.o: ./%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) $(BUILD)/fluidDemo.exe
 
--include $(OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d) $(FLUID_DEMO_OBJECTS:.o=.d)

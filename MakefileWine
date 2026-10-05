@@ -4,6 +4,8 @@
 #
 #   make -f MakefileWine LLVM_MINGW=/path/to/llvm-mingw -j$(nproc)     # -> build/winGame.exe
 #   cd build && wine winGame.exe
+#   make -f MakefileWine LLVM_MINGW=/path/to/llvm-mingw fluid-demo     # -> build/fluidDemo.exe (GPU fluid demo)
+#   cd build && wine fluidDemo.exe
 #
 # Optional overrides: WINE_VULKAN_LIB=/path/to/libvulkan-1.a, VULKAN_HEADERS=/path/to/Include
 
@@ -32,18 +34,25 @@ SOURCES = $(GLVM_COMMON_SOURCES) $(GLVM_WINDOWS_SOURCES) $(GLVM_TEXTURE_SOURCES)
 OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
 TARGET  = $(BUILD)/winGame.exe
 
-.PHONY: all clean
+.PHONY: all clean fluid-demo
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDLIBS) -o $@
 
+# GPU fluid demo (src/FluidDemo, a separate program on the fluid module)
+FLUID_DEMO_OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLVM_FLUID_DEMO_SOURCES) $(GLVM_FLUID_DEMO_WINDOWS_SOURCES))
+fluid-demo: $(BUILD)/fluidDemo.exe
+
+$(BUILD)/fluidDemo.exe: $(FLUID_DEMO_OBJECTS)
+	$(CXX) $(FLUID_DEMO_OBJECTS) $(LDLIBS) -o $@
+
 $(OBJ_DIR)/%.o: ./%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) $(BUILD)/fluidDemo.exe
 
--include $(OBJECTS:.o=.d)
+-include $(OBJECTS:.o=.d) $(FLUID_DEMO_OBJECTS:.o=.d)
