@@ -4,6 +4,7 @@
 #   make -f MakefileLin SANITIZE=1 -j$(nproc)   ASan + UBSan build: build/linGame-asan (separate objects)
 #   make -f MakefileLin WERROR=1                treat warnings as errors
 #   make -f MakefileLin run                     build and start the game
+#   make -f MakefileLin gltf-tests              glTF loader tests: build/gltfTests [glTF-Sample-Assets/Models ...]
 #   make -f MakefileLin clean
 #
 # The executable must stay in build/: resources are looked up as ../<dir>/ relative to the executable.
@@ -52,7 +53,7 @@ OBJECTS = $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(SOURCES) $(TEXTURE_SOURCES)) \
 	  $(patsubst ./%.c,$(OBJ_DIR)/%.o,$(SOURCES_C))
 TARGET  = $(BUILD)/$(EXECUTABLE)
 
-.PHONY: all run clean wayland-protocols udp-client
+.PHONY: all run clean wayland-protocols udp-client gltf-tests
 
 all: $(TARGET)
 
@@ -76,8 +77,18 @@ udp-client: $(BUILD)/udpClient
 $(BUILD)/udpClient: $(OBJ_DIR)/src/Network/clientMain.o $(OBJ_DIR)/src/Network/UDP_ClientLinux.o
 	$(CXX) $(LDFLAGS) $^ -o $@
 
+# glTF loader tests (tests/GltfTests.cpp): synthetic models, plus every .gltf/.glb of the directories given as arguments
+GLTF_TEST_SOURCES = ./tests/GltfTests.cpp ./src/JsonParser.cpp ./src/Gltf/GltfLoader.cpp ./src/Gltf/GltfEvaluate.cpp \
+	./src/Gltf/GltfImage.cpp ./src/Gltf/GltfEngineAdapter.cpp
+gltf-tests: $(BUILD)/gltfTests
+
+$(BUILD)/gltfTests: $(patsubst ./%.cpp,$(OBJ_DIR)/%.o,$(GLTF_TEST_SOURCES))
+	$(CXX) $(LDFLAGS) $^ -o $@
+
+-include $(OBJ_DIR)/tests/GltfTests.d
+
 clean:
-	rm -rf $(BUILD)/obj $(BUILD)/obj-asan $(BUILD)/linGame $(BUILD)/linGame-asan $(BUILD)/udpClient
+	rm -rf $(BUILD)/obj $(BUILD)/obj-asan $(BUILD)/linGame $(BUILD)/linGame-asan $(BUILD)/udpClient $(BUILD)/gltfTests
 
 # Regenerate the protocol glue (needs wayland-scanner from wayland-devel)
 WAYLAND_SCANNER ?= wayland-scanner

@@ -97,6 +97,34 @@ X11 backends (Xlib, XCB) exist too; they are selected at compile time with `VK_U
       VULKAN_SDK=/path/to/VulkanSDK make -f MakefileMingw -j$(nproc)          # MinGW-w64 GCC
       make -f MakefileWine LLVM_MINGW=/path/to/llvm-mingw -j$(nproc)          # llvm-mingw, run with: cd build && wine winGame.exe
 
+## glTF models
+
+Models are loaded by the glTF 2.0 loader in `src/Gltf` (interface: `include/Gltf/Gltf.hpp`):
+
+* `.gltf` with external or embedded (`data:` URI) buffers and `.glb`, any number of buffers;
+* the whole core specification: all meshes, primitives and primitive modes, interleaved, normalized and
+  sparse accessors, node hierarchy (TRS and matrices), scenes, skins, morph targets, animations
+  (translation, rotation, scale, weights with LINEAR, STEP and CUBICSPLINE interpolation), materials,
+  textures, samplers, cameras; PNG and JPEG images are decoded with stb_image (`include/ThirdParty`);
+* extensions: `KHR_mesh_quantization`, `KHR_texture_transform`, `KHR_lights_punctual`,
+  `KHR_materials_emissive_strength`, `KHR_materials_unlit`. A file that requires another extension
+  (Draco, meshopt, Basis Universal...) is rejected with a message.
+
+Broken files are reported with `std::runtime_error("glTF loader: <file>: <what is wrong>")`, non fatal problems are
+printed as warnings.
+
+The engine gets a model through `GLVM::gltf::bakeForEngine` (`include/Gltf/GltfEngineAdapter.hpp`): every mesh node
+of the scene goes into one vertex buffer. Static models get their node transforms baked into the vertices, animated
+models (skins or animated nodes) are skinned on the GPU, nodes animated without a skin follow their node as a rigid
+joint. `animations[0]` is sampled at its key frame times. Engine limits: one animation per model, 128 joints, morph
+targets are shown with their default weights, points and lines are skipped.
+
+Tests (synthetic models, plus every model of the given directories, e.g. the
+[Khronos sample models](https://github.com/KhronosGroup/glTF-Sample-Assets)):
+
+    make -f MakefileLin gltf-tests
+    ./build/gltfTests path/to/glTF-Sample-Assets/Models
+
 ## Controls
 
     W A S D     move

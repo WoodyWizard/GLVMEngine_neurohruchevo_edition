@@ -141,6 +141,17 @@ namespace GLVM::Core
 			return &(*value.array)[index];
 		}
 
+		/// Calls function(key, value) for every member of an object (in hash order), does nothing for other types.
+		template<typename Function>
+		void forEachMember(Function&& function) const {
+			if (type != JSON_OBJECT)
+				return;
+			for (unsigned int i = 0; i < value.object->GetCapacity(); ++i) {
+				for (const Node<JsonValue>* node = value.object->hashMap_[i]; node != nullptr; node = node->next_)
+					function(node->key_, node->value_);
+			}
+		}
+
 		/// Number of array elements, 0 for any other type.
 		unsigned int size() const {
 			return type == JSON_ARRAY ? value.array->GetSize() : 0;
@@ -246,6 +257,7 @@ namespace GLVM::Core
 		~CJsonParser();
 		JsonValue* GetRoot() { return root_; }
         bool ReadFile(const char* _filePath);                 ///< Returns false if the file can't be read
+		void ReadText(const std::string& text, const std::string& sourceName);   ///< JSON from memory, sourceName is used in errors
         void Parse();                                          ///< Throws std::runtime_error on malformed JSON
 		JsonValue CreateJsonHashMap();
 		JsonValue CreateJsonArray();
@@ -253,6 +265,7 @@ namespace GLVM::Core
 		JsonValue NumberParse();
 		std::string StringParse();
 		core::vector<JsonValue> Search(const char* key_) const;
+		/// Loads a .gltf / .glb model in the engine vertex layout (see Gltf/GltfEngineAdapter.hpp). Throws std::runtime_error.
 		void LoadGLTF(const char* pathsGLTF_,
 					  std::vector<float>& aVertexes_,
 					  std::vector<uint32_t>& aIndices_,
@@ -260,7 +273,6 @@ namespace GLVM::Core
 					  core::vector<float>& frames,
 					  bool& noAnimations,
 					  float& topY);
-		unsigned int getJointIndex(const Core::JsonValue& joints, int searchingIndex) const;
     };
 }
 

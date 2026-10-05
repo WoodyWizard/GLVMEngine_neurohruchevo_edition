@@ -5,6 +5,7 @@ GLVM_COMMON_SOURCES = ./src/Engine.cpp ./src/EngineMain.cpp \
 	./src/ComponentManager.cpp ./src/EntityManager.cpp ./src/SystemManager.cpp \
 	./src/SoundEngineFactory.cpp ./src/TextureManager.cpp ./src/TextureLoadingUtils.cpp \
 	./src/WavefrontObjParser.cpp ./src/MeshManager.cpp ./src/JsonParser.cpp \
+	./src/Gltf/GltfLoader.cpp ./src/Gltf/GltfEvaluate.cpp ./src/Gltf/GltfImage.cpp ./src/Gltf/GltfEngineAdapter.cpp \
 	./src/ProceduralLevelGeneratingSystem.cpp ./src/ThreadPool.cpp \
 	./src/Common/CommonFunctions.cpp \
 	./src/GraphicAPI/Vulkan.cpp ./src/GraphicAPI/VkBuilders.cpp \
